@@ -59,7 +59,6 @@ from engine_pretrain import train_one_epoch
 #       --norm_pix_loss \
 #       --exp-name imgnet_one_block
 
-
 # one-moe
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_pretrain.py \
 #       --batch_size 64 \
@@ -152,6 +151,13 @@ def get_args_parser():
                         help='url used to set up distributed training')
 
     parser.add_argument("--exp-name", type=str, required=True, help="Name for experiment run (used for logging)")
+    parser.add_argument('--finetune', default='',
+                        help='finetune from checkpoint')
+
+    parser.add_argument('--times', default=1, type=int,
+                        help='number of distributed processes')
+    parser.add_argument('--cycle', action='store_true')
+    parser.set_defaults(cycle=False)
 
     return parser
 
@@ -222,6 +228,18 @@ def main(args):
     # define the model
     model = models_mae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss)
 
+    if args.finetune:
+        checkpoint = torch.load(args.finetune, map_location='cpu')
+
+        print("Load pre-trained checkpoint from: %s" % args.finetune)
+        checkpoint_model = checkpoint['model']
+
+        # # interpolate position embedding
+        # interpolate_pos_embed(model, checkpoint_model)
+
+        # load pre-trained model
+        msg = model.load_state_dict(checkpoint_model, strict=False)
+        print(msg)
 
     model.to(device)
 
@@ -254,7 +272,7 @@ def main(args):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
+    for epoch in range(args.start_epoch, args.epochs * args.times):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         train_stats = train_one_epoch(

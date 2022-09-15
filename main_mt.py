@@ -1,13 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# --------------------------------------------------------
 
 import argparse
 import datetime
@@ -31,53 +21,33 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset
+from util.datasets import build_taskonomy
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
-import models_vit
+import models_mt
 
-from engine_finetune import train_one_epoch, evaluate
+from engine_mt import train_one_epoch, evaluate
+from util.AutomaticWeightedLoss import AutomaticWeightedLoss
 
-# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=6 --master_port 44875 main_finetune.py \
-#       --batch_size 64 \
-#       --model vit_moe_base_patch16 \
-#       --epochs 100 \
-#       --input_size 224 \
-#       --blr 5e-4 \
-#       --layer_decay 0.65 \
-#       --drop_path 0.1 \
-#       --weight_decay 0.05 \
-#       --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
-#       --exp-name mae_finetune_debug \
-#       --finetune /gpfs/u/home/AICD/AICDzich/scratch/work_dirs/VLMOE/imgnet_moe_base_4x_224/save-220.pth \
-      
-# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_finetune.py \
-#       --batch_size 64 \
-#       --model vit_moe_small_patch16 \
-#       --epochs 100 \
-#       --input_size 224 \
-#       --blr 5e-4 \
-#       --layer_decay 0.65 \
-#       --drop_path 0.1 \
-#       --weight_decay 0.05 \
-#       --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
-#       --exp-name mae_finetune_debug \
+from fvcore.nn import FlopCountAnalysis, flop_count_str
+from ptflops import get_model_complexity_info
 
-# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_finetune.py \
-#         --batch_size 128 \
+
+
+# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_mt.py \
+#         --batch_size 20 \
 #         --epochs 100 \
 #         --input_size 224 \
 #         --blr 5e-4 --weight_decay 0.05 \
 #         --warmup_epochs 10 \
 #         --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
-#         --model vit_base \
+#         --model mtvit_small \
 #         --drop_path 0.1 \
 #         --times 5 \
-#         --dynamic_lr \
 #         --cycle \
-#         --exp-name vit_base_81.4_cycle \
-#         --finetune /gpfs/u/home/AICD/AICDzich/scratch/work_dirs/VLMOE/vit_base_81.4_again/save-199.pth \
+#         --exp-name debug4 \
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -107,7 +77,7 @@ def get_args_parser():
                         help='learning rate (absolute lr)')
     parser.add_argument('--blr', type=float, default=1e-3, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--layer_decay', type=float, default=0.75,
+    parser.add_argument('--layer_decay', type=float, default=1.0,
                         help='layer-wise lr decay from ELECTRA/BEiT')
 
     parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
@@ -162,9 +132,9 @@ def get_args_parser():
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
 
-    parser.add_argument('--output_dir', default='/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/VLMOE',
+    parser.add_argument('--output_dir', default='/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/MTMoe',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/logs/imgnet',
+    parser.add_argument('--log_dir', default='/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/logs_MTMoe',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -196,11 +166,16 @@ def get_args_parser():
 
     parser.add_argument('--times', default=1, type=int,
                         help='number of distributed processes')
+    parser.add_argument('--tasks', default=10, type=int,
+                        help='number of tasks')
 
     parser.add_argument('--eval_all', action='store_true')
     parser.add_argument('--cycle', action='store_true')
     parser.add_argument('--only_gate', action='store_true')
     parser.add_argument('--dynamic_lr', action='store_true')
+    parser.add_argument('--the_task', type=str, default='',
+                        help='The only one task')
+
     parser.set_defaults(only_gate=False)
     parser.set_defaults(cycle=False)
     parser.set_defaults(eval_all=False)
@@ -210,7 +185,19 @@ def get_args_parser():
 
 
 def main(args):
-    
+    if args.tasks == 15:
+        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.tasks == 14:  # no semantic_seg
+        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.tasks == 10:  # no semantic_seg
+        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.tasks == 9:  # no semantic_seg
+        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.tasks == 2:
+        args.img_types = [args.the_task, 'rgb']
+    else:
+        assert False
+
     # make dir
     args.output_dir = os.path.join(args.output_dir, str(args.exp_name))
     args.log_dir = os.path.join(args.log_dir, str(args.exp_name))
@@ -238,8 +225,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset(is_train=True, args=args)
-    dataset_val = build_dataset(is_train=False, args=args)
+    dataset_train = build_taskonomy(is_train=True, args=args)
+    dataset_val = build_taskonomy(is_train=False, args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -285,23 +272,9 @@ def main(args):
         drop_last=False
     )
 
-    if args.data_path[-8:-1] == 'imgnet_':
-        args.nb_classes = 1000
-        if args.data_path[-1] == '1':
-            args.other_classes = 500
-    else:
-        args.nb_classes = len(dataset_train.classes)
-
-    mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
-    if mixup_active:
-        print("Mixup is activated!")
-        mixup_fn = Mixup(
-            mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-            label_smoothing=args.smoothing, num_classes=args.nb_classes)
     
-    model = models_vit.__dict__[args.model](
+    model = models_mt.__dict__[args.model](
+        args.img_types,
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
@@ -313,10 +286,6 @@ def main(args):
         print("Load pre-trained checkpoint from: %s" % args.finetune)
         checkpoint_model = checkpoint['model']
         state_dict = model.state_dict()
-        for k in ['head.weight', 'head.bias']:
-            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-                print(f"Removing key {k} from pretrained checkpoint")
-                del checkpoint_model[k]
 
         # interpolate position embedding
         interpolate_pos_embed(model, checkpoint_model)
@@ -325,60 +294,62 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-        if args.only_gate:
-            for name, p in model.named_parameters():
-                if "f_gate" in name or 'w_noise' in name:
-                    p.requires_grad = True
-                else:
-                    p.requires_grad = False
-            model.head.requires_grad = True
-        # if args.global_pool:
-        #     assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
-        # else:
-        #     assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
-
-        # manually initialize fc layer
-        trunc_normal_(model.head.weight, std=2e-5)
-
     model.to(device)
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    print("Model = %s" % str(model_without_ddp))
-    print('number of params (M): %.2f' % (n_parameters / 1.e6))
+    
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
-    print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-    print("actual lr: %.2e" % args.lr)
+    if misc.is_main_process():
+        print("Model = %s" % str(model_without_ddp))
+        print('model_name:', args.model)
+        
+        t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
+        flops = FlopCountAnalysis(model, (torch.randn(16,3,224,224).to(device), t_mg_types[0], True))
+        print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
 
-    print("accumulate grad iterations: %d" % args.accum_iter)
-    print("effective batch size: %d" % eff_batch_size)
+        # macs, params = get_model_complexity_info(model, (3, 224, 224), as_strings=True,
+        #                                        print_per_layer_stat=True, verbose=True)
+        # print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+        # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+
+
+        print('number of params (M): %.2f' % (n_parameters / 1.e6))
+        print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+        print("actual lr: %.2e" % args.lr)
+
+        print("accumulate grad iterations: %d" % args.accum_iter)
+        print("effective batch size: %d" % eff_batch_size)
+
+        print('len train: ', len(dataset_train))
+        print('len val: ', len(dataset_val))
 
     args.distributed = True
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        if args.tasks == 2:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        else:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     # build optimizer with layer-wise lr decay (lrd)
+    AWL = AutomaticWeightedLoss(args.tasks-1)
+    AWL.to(device)
+
     param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
         no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay
+        layer_decay=args.layer_decay,
+        AWL=AWL
     )
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
 
-    if mixup_fn is not None:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif args.smoothing > 0.:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.CrossEntropyLoss()
 
     print("criterion = %s" % str(criterion))
 
@@ -389,14 +360,10 @@ def main(args):
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         exit(0)
 
-    # for data_iter_step, (samples, targets) in tqdm(enumerate(data_loader_train)):
-    #     samples = samples.to(device, non_blocking=True)
-    #     targets = targets.to(device, non_blocking=True)
-    #     pass
-
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
+    
         
     for epoch in range(args.start_epoch, args.epochs * args.times):
         if args.distributed:
@@ -404,7 +371,8 @@ def main(args):
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            args.clip_grad, mixup_fn,
+            args.clip_grad, None,
+            AWL=AWL,
             log_writer=log_writer,
             args=args
         )
@@ -413,15 +381,17 @@ def main(args):
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
+        test_stats = evaluate(data_loader_val, model, device, AWL, args)
+        # print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+        # max_accuracy = max(max_accuracy, test_stats["acc1"])
+        # print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if log_writer is not None:
-            log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+            for _key, value in test_stats.items():
+                log_writer.add_scalar('perf/test_' + str(_key), value, epoch)
+            # log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
+            # log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
+            # log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         **{f'test_{k}': v for k, v in test_stats.items()},
@@ -442,6 +412,10 @@ def main(args):
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
+
+    # args.output_dir = '/data/zitianchen/work_dirs/MTMoe'
+    # args.log_dir = '/data/zitianchen/work_dirs/logs_MTMoe'
+
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

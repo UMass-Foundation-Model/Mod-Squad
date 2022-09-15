@@ -38,8 +38,6 @@ import models_vit
 
 from engine_continual import train_one_epoch, evaluate
 
-
-
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_continual.py \
 #       --batch_size 64 \
 #       --model vit_task1_tiny \
@@ -56,6 +54,21 @@ from engine_continual import train_one_epoch, evaluate
 #       --frozen \
 #       --fix_kv \
 
+# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_continual.py \
+#         --batch_size 256 \
+#         --epochs 200 \
+#         --input_size 224 \
+#         --blr 1e-4 --weight_decay 0.05 \
+#         --warmup_epochs 10 \
+#         --times 10 \
+#         --cycle \
+#         --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
+#         --model vit_tiny \
+#         --drop_path 0.1 \
+#         --frozen \
+#         --fix_kv \
+#         --exp-name AE_tiny_frozen_1e-4 \
+#         --finetune /gpfs/u/home/AICD/AICDzich/scratch/work_dirs/VLMOE/imgnet_cls_pretrain_tiny/save-399.pth \
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -182,6 +195,9 @@ def get_args_parser():
     parser.add_argument('--other_classes', default=0, type=int,
                         help='number of other classes')
 
+    parser.add_argument('--times', default=1, type=int,
+                        help='number of distributed processes')
+
     parser.add_argument('--fix_kv', action='store_true')
     parser.add_argument('--frozen', action='store_true')
     parser.add_argument('--head_lr', action='store_true')
@@ -198,6 +214,63 @@ def get_args_parser():
 # Train: Flowers-2040 aircraft-6667 food101 75750 pets 3680 stanford_car 8144
 # Test:  Flowers-6149 aircraft-3333 food101 25250 pets 3669 stanford_car 8041
 
+def load_frozen(model, file_path, args):
+    in_moe = {}
+
+    checkpoint = torch.load(file_path, map_location='cpu')
+
+    print("Load pre-trained checkpoint from: %s" % file_path)
+    checkpoint_model = checkpoint['model']
+    state_dict = model.state_dict()
+
+    # interpolate position embedding
+    interpolate_pos_embed(model, checkpoint_model)
+
+    if 'blocks.0.attn.q_proj.experts.w' in checkpoint_model:
+        in_moe['attn.q_proj.f_gate'] = checkpoint_model['blocks.0.attn.q_proj.f_gate'].shape[1] # dim, E
+        in_moe['mlp.f_gate'] = checkpoint_model['blocks.0.mlp.f_gate'].shape[1] # dim, E
+        in_moe['attn.q_proj.experts.w'] = checkpoint_model['blocks.0.attn.q_proj.experts.w'].shape[0] # E, dim, hid
+        in_moe['attn.q_proj.output_experts.w'] = checkpoint_model['blocks.0.attn.q_proj.output_experts.w'].shape[0] # E, hid, dim
+        in_moe['mlp.experts.w'] = checkpoint_model['blocks.0.mlp.experts.w'].shape[0]
+        in_moe['mlp.output_experts.w'] = checkpoint_model['blocks.0.mlp.output_experts.w'].shape[0]
+
+    for _key in model.state_dict().keys():
+        if _key[-9:] == 'experts.w' or _key[-16:] == 'output_experts.w' or _key[-6:] == 'f_gate' or _key[-7:] == 'w_noise': # f_gate and w_noise: dim, E
+            edim = 0 if _key[-1] == 'w' else 1
+            E_now = model.state_dict()[_key].shape[edim]
+            E_past = checkpoint_model[_key].shape[edim]
+            assert E_now >= E_past
+            assert E_now <= E_past + E_past
+            if E_now == E_past:
+                continue
+            if edim==0:
+                checkpoint_model[_key] = torch.concat((checkpoint_model[_key], checkpoint_model[_key][:E_now-E_past]), dim=edim)
+            elif edim==1:
+                checkpoint_model[_key] = torch.concat((checkpoint_model[_key], checkpoint_model[_key][:, :E_now-E_past]), dim=edim)
+
+    if not args.global_pool:
+        del checkpoint_model['fc_norm.weight'], checkpoint_model['fc_norm.bias']
+
+    # Note: watch the case that have the same class num
+    # manually initialize fc layer
+    trunc_normal_(model.head.weight, std=2e-5)
+    if model.head.weight.shape[0] != checkpoint_model['head.weight'].shape[0]:
+        del checkpoint_model['head.weight']
+        del checkpoint_model['head.bias']
+
+    msg = model.load_state_dict(checkpoint_model, strict=False)
+    print(msg)
+
+    if args.frozen:
+        model.patch_embed.requires_grad = False
+        model.cls_token.requires_grad = False
+        model.pos_embed.requires_grad = False
+        model.head.requires_grad = True # Never froze head
+        if args.fix_kv:
+            for blk in model.blocks:
+                blk.attn.kv_proj.requires_grad = False
+
+    return in_moe
 
 def main(args):
 
@@ -213,6 +286,8 @@ def main(args):
         if file[:10] == 'checkpoint': #
             print('resume', os.path.join(args.output_dir, file))
             args.resume = os.path.join(args.output_dir, file)
+            checkpoint = torch.load(args.resume, map_location='cpu')
+            args.start_epoch = checkpoint['epoch'] + 1
         
     misc.init_distributed_mode(args)
 
@@ -291,185 +366,118 @@ def main(args):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
     
-    model = models_vit.__dict__[args.model](
-        num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
-        global_pool=args.global_pool,
-    )
+    start_time = args.start_epoch // args.epochs
+    epoch = args.start_epoch
+    for the_time in range(start_time, args.times):
+        assert args.model[:4] == 'vit_'
 
-    in_moe = {}
-    if args.finetune and not args.eval:
-        checkpoint = torch.load(args.finetune, map_location='cpu')
+        model_name = 'vit_task' + str(the_time + 1) + '_' + str(args.model[4:])
 
-        print("Load pre-trained checkpoint from: %s" % args.finetune)
-        checkpoint_model = checkpoint['model']
-        state_dict = model.state_dict()
-
-        # interpolate position embedding
-        interpolate_pos_embed(model, checkpoint_model)
-
-        # load pre-trained model
-        # print(model.state_dict().keys())
-        # print(model.state_dict()['blocks.9.attn.q_proj.experts.w'].shape)
-        # print(model.state_dict()['blocks.9.attn.q_proj.output_experts.w'].shape)
-        # print(model.state_dict()['blocks.9.attn.q_proj.f_gate'].shape)
-        # print(model.state_dict()['blocks.9.attn.q_proj.w_noise'].shape)
-
-        # print(' ------------')
-        # print(checkpoint_model['blocks.9.attn.q_proj.experts.w'].shape) # E, dim, hid
-        # print(checkpoint_model['blocks.9.attn.q_proj.output_experts.w'].shape) # E, hid, dim
-        # print(checkpoint_model['blocks.9.attn.q_proj.f_gate'].shape) # dim, E
-        # print(checkpoint_model['blocks.9.attn.q_proj.w_noise'].shape) # dim, E
-        # print(checkpoint_model['blocks.9.mlp.experts.w'].shape)
-        # print(checkpoint_model['blocks.9.mlp.output_experts.w'].shape)
-        # print(checkpoint_model['blocks.9.mlp.f_gate'].shape)
-        # print(checkpoint_model['blocks.9.mlp.w_noise'].shape)
-
-        if 'blocks.9.attn.q_proj.experts.w' in checkpoint_model:
-            in_moe['attn.q_proj.experts.w'] = checkpoint_model['blocks.9.attn.q_proj.experts.w'].shape[0]
-            in_moe['attn.q_proj.output_experts.w'] = checkpoint_model['blocks.9.attn.q_proj.output_experts.w'].shape[0]
-            in_moe['mlp.experts.w'] = checkpoint_model['blocks.9.mlp.experts.w'].shape[0]
-            in_moe['mlp.output_experts.w'] = checkpoint_model['blocks.9.mlp.output_experts.w'].shape[0]
-
-        for _key in model.state_dict().keys():
-            if _key[-9:] == 'experts.w' or _key[-16:] == 'output_experts.w' or _key[-6:] == 'f_gate' or _key[-7:] == 'w_noise':
-                edim = 0 if _key[-1] == 'w' else 1
-                E_now = model.state_dict()[_key].shape[edim]
-                E_past = checkpoint_model[_key].shape[edim]
-                assert E_now >= E_past
-                if E_now == E_past:
-                    continue
-                if edim==0:
-                    checkpoint_model[_key] = torch.concat((checkpoint_model[_key], model.state_dict()[_key][:E_now-E_past]), dim=edim)
-                elif edim==1:
-                    checkpoint_model[_key] = torch.concat((checkpoint_model[_key], model.state_dict()[_key][:, :E_now-E_past]), dim=edim)
-
-
-        if not args.global_pool:
-            del checkpoint_model['fc_norm.weight'], checkpoint_model['fc_norm.bias']
-
-        # Note: watch the case that have the same class num
-        if model.head.weight.shape[0] != checkpoint_model['head.weight'].shape[0]:
-            del checkpoint_model['head.weight']
-            del checkpoint_model['head.bias']
-
-        msg = model.load_state_dict(checkpoint_model, strict=False)
-        print(msg)
-
-        # for k in ['head.weight', 'head.bias']:
-        #     if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-        #         print(f"Removing key {k} from pretrained checkpoint")
-        #         del checkpoint_model[k]
-
-        if args.frozen:
-            model.patch_embed.requires_grad = False
-            model.cls_token.requires_grad = False
-            model.pos_embed.requires_grad = False
-            model.head.requires_grad = True
-            # if 'head.weight' in checkpoint_model: # same dataset
-            #     model.head.requires_grad = False
-            if args.fix_kv:
-                for blk in model.blocks:
-                    blk.attn.kv_proj.requires_grad = False
-
-        # manually initialize fc layer
-        trunc_normal_(model.head.weight, std=2e-5)
-
-    model.to(device)
-
-    model_without_ddp = model
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    
-    if args.lr is None:  # only base_lr is specified
-        args.lr = args.blr * eff_batch_size / 256
-
-    if misc.is_main_process():
-        print("Model = %s" % str(model_without_ddp))
-        print('number of params (M): %.2f' % (n_parameters / 1.e6))
-        print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-        print("actual lr: %.2e" % args.lr)
-
-        print("accumulate grad iterations: %d" % args.accum_iter)
-        print("effective batch size: %d" % eff_batch_size)
-
-        print('len train: ', len(dataset_train))
-        print('len val: ', len(dataset_val))
-        print('path: ', args.data_path)
-        print('class num: ', args.nb_classes)
-
-    args.distributed = True
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-
-    # build optimizer with layer-wise lr decay (lrd)
-    param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay,
-        head_lr=args.head_lr
-    )
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
-    loss_scaler = NativeScaler()
-
-    if mixup_fn is not None:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif args.smoothing > 0.:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-
-    print("criterion = %s" % str(criterion))
-
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-
-    if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        exit(0)
-
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
-
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, mixup_fn,
-            log_writer=log_writer,
-            args=args,
-            in_moe=in_moe
+        model = models_vit.__dict__[model_name](
+            num_classes=args.nb_classes,
+            drop_path_rate=args.drop_path,
+            global_pool=args.global_pool,
         )
-        if args.output_dir:
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
+        
+        # if epoch % args.epochs == 0:
+        if the_time == 0:
+            if args.finetune and not args.eval:
+                in_moe = load_frozen(model, args.finetune, args)
+        else:
+            in_moe = load_frozen(model, args.output_dir + '/checkpoint-' + str(epoch - 1) + '.pth', args)
 
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
+        model.to(device)
 
-        if log_writer is not None:
-            log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+        model_without_ddp = model
+        n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
+        eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
+        
+        if args.lr is None:  # only base_lr is specified
+            args.lr = args.blr * eff_batch_size / 256
 
-        if args.output_dir and misc.is_main_process():
+        if misc.is_main_process():
+            print("Model = %s" % str(model_without_ddp))
+            print('model_name:', model_name)
+            print('number of params (M): %.2f' % (n_parameters / 1.e6))
+            print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+            print("actual lr: %.2e" % args.lr)
+
+            print("accumulate grad iterations: %d" % args.accum_iter)
+            print("effective batch size: %d" % eff_batch_size)
+
+            print('len train: ', len(dataset_train))
+            print('len val: ', len(dataset_val))
+            print('path: ', args.data_path)
+            print('class num: ', args.nb_classes)
+
+        args.distributed = True
+        if args.distributed:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+            model_without_ddp = model.module
+
+        # build optimizer with layer-wise lr decay (lrd)
+        param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
+            no_weight_decay_list=model_without_ddp.no_weight_decay(),
+            layer_decay=args.layer_decay,
+            head_lr=args.head_lr
+        )
+        optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+        loss_scaler = NativeScaler()
+
+        if mixup_fn is not None:
+            # smoothing is handled with mixup label transform
+            criterion = SoftTargetCrossEntropy()
+        elif args.smoothing > 0.:
+            criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
+        else:
+            criterion = torch.nn.CrossEntropyLoss()
+
+        if epoch % args.epochs != 0:
+            misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+
+        print(f"Start training for {args.epochs} epochs")
+        start_time = time.time()
+        max_accuracy = 0.0
+
+        while epoch < args.epochs * (the_time + 1):
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler,
+                args.clip_grad, mixup_fn,
+                log_writer=log_writer,
+                args=args,
+                in_moe=in_moe
+            )
+            if args.output_dir:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch)
+
+            test_stats = evaluate(data_loader_val, model, device)
+            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+            max_accuracy = max(max_accuracy, test_stats["acc1"])
+            print(f'Max accuracy: {max_accuracy:.2f}%')
+
             if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+                log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
+                log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
+                log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                            **{f'test_{k}': v for k, v in test_stats.items()},
+                            'epoch': epoch,
+                            'n_parameters': n_parameters}
+
+            if args.output_dir and misc.is_main_process():
+                if log_writer is not None:
+                    log_writer.flush()
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+
+            epoch = epoch + 1
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

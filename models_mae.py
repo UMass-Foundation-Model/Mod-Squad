@@ -26,7 +26,7 @@ from parallel_experts import MoE
 
 from moe import MoE as MMoE
 from moe import cvMoE
-from mixture_of_experts import MoE as newMoE
+# from mixture_of_experts import MoE as newMoE
 from oldmoe import MoE as oldMoE
 
 from parallel_experts import RandomMoE
@@ -192,6 +192,7 @@ class DecoderBlock(nn.Module):
 
         return x
 
+# MLP hidden/4 topk=4
 class MoEAttention(nn.Module):
     def __init__(self, dim, num_experts=24, num_heads=8, head_dim=None, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
         sample_topk=2, cvloss=0, switchloss=0.01 * 10, zloss=0.001 * 1, moe_type='normal'):
@@ -489,6 +490,7 @@ class MoEnhanceBlock(nn.Module):
     def __init__(self, dim, num_heads, num_attn_experts=24, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  num_ffd_experts=16, ffd_heads=2, ffd_noise=True,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, head_dim=None, init_values=None, z_weight=0.000,
+                 post_layer_norm=False,
                  cvloss=0, switchloss=0.01 * 1, zloss=0.001 * 1, sample_topk=0, moe_type='normal'):
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -511,15 +513,35 @@ class MoEnhanceBlock(nn.Module):
                 ),
                 noisy_gating=ffd_noise
             )
+        self.post_layer_norm = post_layer_norm
         assert z_weight == 0
 
-    def forward(self, x, mask=None):
-        y, z_loss = self.attn(self.norm1(x), mask=mask)
-        x = x + self.drop_path(y)
+    # post layer norm | pre layer norm 
+    # topk_gating / topk_gating.sum()
+    # switchloss=0.01 * 1, zloss=0.001 * 1
+    # Learning rate
+    # feedforward topk=4. 
+    # learning rate
+    # head_size * 4 
+    # 
 
-        y, aux_loss = self.mlp(self.norm2(x))
-        x = x + self.drop_path(y)
-        return x, z_loss + aux_loss
+    def forward(self, x, mask=None):
+        if self.post_layer_norm:
+            y, z_loss = self.attn(x, mask=mask)
+            x = x + self.drop_path(y)
+            x = self.norm1(x)
+
+            y, aux_loss = self.mlp(x)
+            x = x + self.drop_path(y)
+            x = self.norm2(x)
+            return x, z_loss + aux_loss
+        else:
+            y, z_loss = self.attn(self.norm1(x), mask=mask)
+            x = x + self.drop_path(y)
+
+            y, aux_loss = self.mlp(self.norm2(x))
+            x = x + self.drop_path(y)
+            return x, z_loss + aux_loss
 
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone

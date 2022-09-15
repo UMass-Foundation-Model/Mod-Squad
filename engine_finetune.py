@@ -55,34 +55,33 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
-        with torch.autograd.set_detect_anomaly(True):
-            with torch.cuda.amp.autocast():
-                outputs, z_loss = model(samples)
-                loss = criterion(outputs, targets)
+        # with torch.autograd.set_detect_anomaly(True):
+        with torch.cuda.amp.autocast():
+            outputs, z_loss = model(samples)
+            loss = criterion(outputs, targets)
 
-            loss_value = loss.item()
+        loss_value = loss.item()
 
-            loss = loss + z_loss
-            if torch.is_tensor(z_loss):
-                z_loss_value = z_loss.item()
-            else:
-                z_loss_value = z_loss
+        loss = loss + z_loss
+        if torch.is_tensor(z_loss):
+            z_loss_value = z_loss.item()
+        else:
+            z_loss_value = z_loss
 
+        loss = torch.clamp(loss, min=-1000, max=1000)
+        if not math.isfinite(loss_value):
+            print("Loss is {}, stopping training".format(loss_value))
             loss = torch.clamp(loss, min=-1000, max=1000)
-            if not math.isfinite(loss_value):
-                print("Loss is {}, stopping training".format(loss_value))
-                loss = torch.clamp(loss, min=-1000, max=1000)
-                # loss = torch.zeros(0).cuda()
-                sys.exit(1)
-            
-            loss /= accum_iter
-            loss_scaler(loss, optimizer, clip_grad=max_norm,
-                        parameters=model.parameters(), create_graph=False,
-                        update_grad=(data_iter_step + 1) % accum_iter == 0)
-            if (data_iter_step + 1) % accum_iter == 0:
-                optimizer.zero_grad()
+            sys.exit(1)
+        
+        loss /= accum_iter
+        loss_scaler(loss, optimizer, clip_grad=max_norm,
+                    parameters=model.parameters(), create_graph=False,
+                    update_grad=(data_iter_step + 1) % accum_iter == 0)
+        if (data_iter_step + 1) % accum_iter == 0:
+            optimizer.zero_grad()
 
-            torch.cuda.synchronize()
+        torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
         min_lr = 10.

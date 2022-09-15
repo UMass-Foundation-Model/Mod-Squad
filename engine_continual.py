@@ -43,7 +43,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
-            lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+            if args.cycle:
+                lr_sched.adjust_cycle_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+            else:
+                lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
@@ -68,8 +71,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
-            loss = 0 
-            # sys.exit(1)
+            sys.exit(1)
 
         loss /= accum_iter
         loss_scaler(loss, optimizer, clip_grad=max_norm,

@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional, Tuple
 import PIL.Image
 import json
 from PIL import Image
+from util.taskonomy import TaskonomyDataset
 
 class SUN397(VisionDataset):
     """`The SUN397 Data Set <https://vision.princeton.edu/projects/2010/SUN/>`_.
@@ -202,7 +203,6 @@ class INaturalist(VisionDataset):
 
         return img, target
 
-
     def __len__(self) -> int:
         return len(self.index)
 
@@ -277,3 +277,17 @@ def build_transform(is_train, args):
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(mean, std))
     return transforms.Compose(t)
+
+def build_taskonomy(is_train, args):
+    transform = transforms.Compose([
+                                transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.225, 0.225, 0.225))])
+
+    # def __init__(self, img_types, data_dir='/data/zitianchen/taskonomy_medium', 
+    #     partition='train', transform=None, resize_scale=None, crop_size=None, fliplr=False):
+
+    if is_train:
+        dataset = TaskonomyDataset(args.img_types, partition='train', transform=transform, resize_scale=256, crop_size=224, fliplr=True)
+    else:
+        dataset = TaskonomyDataset(args.img_types, partition='test', transform=transform, resize_scale=224)
+    return dataset
+

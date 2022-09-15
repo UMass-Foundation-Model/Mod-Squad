@@ -256,6 +256,8 @@ def init_distributed_mode(args):
 
 def Frozen_blk(model, in_moe):
     for blk in model.module.blocks:
+        blk.attn.q_proj.f_gate.grad[:, :in_moe['attn.q_proj.f_gate']] = 0.0
+        blk.mlp.f_gate.grad[:, :in_moe['mlp.f_gate']] = 0.0
         blk.attn.q_proj.experts.w.grad[:in_moe['attn.q_proj.experts.w']] = 0.0
         blk.attn.q_proj.output_experts.w.grad[:in_moe['attn.q_proj.output_experts.w']] = 0.0
         blk.mlp.experts.w.grad[:in_moe['mlp.experts.w']] = 0.0

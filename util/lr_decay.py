@@ -12,7 +12,7 @@
 import json
 
 
-def param_groups_lrd(model, weight_decay=0.05, no_weight_decay_list=[], layer_decay=.75, head_lr=False):
+def param_groups_lrd(model, weight_decay=0.05, no_weight_decay_list=[], layer_decay=.75, head_lr=False, AWL=None):
     """
     Parameter groups for layer-wise lr decay
     Following BEiT: https://github.com/microsoft/unilm/blob/master/beit/optim_factory.py#L58
@@ -34,6 +34,21 @@ def param_groups_lrd(model, weight_decay=0.05, no_weight_decay_list=[], layer_de
                 "weight_decay": weight_decay,
                 "params": [],
             }
+
+    if AWL is not None:
+        param_group_names['AWL'] = {
+                "lr_scale": 1.0, 
+                "weight_decay": weight_decay,
+                "params": [],
+            }
+        param_groups['AWL'] = {
+                    "lr_scale": 1.0, 
+                    "weight_decay": weight_decay,
+                    "params": [],
+            }
+        for n, p in AWL.named_parameters():
+            param_group_names['AWL']["params"].append(n)
+            param_groups['AWL']["params"].append(p)
 
     for n, p in model.named_parameters():
         if n == 'head.weight' or n == 'head.bias':

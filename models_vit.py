@@ -457,6 +457,14 @@ def vit_pretrain_base(**kwargs):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
+def vit_task0_tiny(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=3, head_dim=192//3 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
 def vit_task1_tiny(**kwargs):
     model = VisionTransformerMoEAll(
         patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
@@ -465,29 +473,62 @@ def vit_task1_tiny(**kwargs):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def vit_task1_small(**kwargs):
+def vit_task0_small(**kwargs):
     model = VisionTransformerMoEAll(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
-        num_attn_experts=6 * 2, head_dim=384//6 * 2,
-        num_ffd_experts=2 * 2, ffd_heads=2, ffd_noise=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def vit_task1_base(**kwargs):
+def vit_task1_small(**kwargs):
     model = VisionTransformerMoEAll(
-        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        num_attn_experts=12 + 6 * 1, head_dim=768//12 * 2,
-        num_ffd_experts=2 * 2, ffd_heads=2, ffd_noise=True,
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6 + 3, head_dim=384//6 * 2,
+        num_ffd_experts=2 + 2, ffd_heads=2, ffd_noise=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 def vit_task2_small(**kwargs):
     model = VisionTransformerMoEAll(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
-        num_attn_experts=6 * 3, head_dim=384//6 * 2,
-        num_ffd_experts=2 * 3, ffd_heads=2, ffd_noise=True,
+        num_attn_experts=6 + 3 * 2, head_dim=384//6 * 2,
+        num_ffd_experts=2 + 2 * 2, ffd_heads=2, ffd_noise=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
+
+def vit_task3_small(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6 + 3 * 3, head_dim=384//6 * 2,
+        num_ffd_experts=2 + 2 * 3, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def vit_task4_small(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6 + 3 * 4, head_dim=384//6 * 2,
+        num_ffd_experts=2 + 2 * 4, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+    
+def vit_task1_base(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=12 + 3 * 1, head_dim=768//12 * 2,
+        num_ffd_experts=2 * 2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def vit_task4_base(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=12 + 3 * 2, head_dim=768//12 * 2,
+        num_ffd_experts=2 * 5, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
 
 def vit_task1_little_small(**kwargs):
     model = VisionTransformerMoEAll(
@@ -519,6 +560,22 @@ def vit_task4_tiny(**kwargs):
         patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
         num_attn_experts=3 * 5, head_dim=192//3 * 2,
         num_ffd_experts=2 * 5, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def vit_task5_tiny(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=3 * 6, head_dim=192//3 * 2,
+        num_ffd_experts=2 * 6, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def vit_task6_tiny(**kwargs):
+    model = VisionTransformerMoEAll(
+        patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=3 * 7, head_dim=192//3 * 2,
+        num_ffd_experts=2 * 7, ffd_heads=2, ffd_noise=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
