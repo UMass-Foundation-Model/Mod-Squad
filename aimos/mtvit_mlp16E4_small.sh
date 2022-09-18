@@ -3,11 +3,10 @@ P_PER_NODE=$2
 
 # ### init virtual environment if needed
 source /gpfs/u/home/AICD/AICDzich/barn/miniconda3/etc/profile.d/conda.sh
-conda activate VLC
+conda activate VLC2
 
 echo "P_PER_NODE"$P_PER_NODE
 echo "SLURM_JOB_NUM_NODES"$SLURM_JOB_NUM_NODES
-echo "SLURM_NODELIST"$SLURM_NODELIST
 
 ### the command to run
 cd /gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/
@@ -37,14 +36,14 @@ python -m torch.distributed.launch \
     --nproc_per_node ${P_PER_NODE}  \
     --nnodes $SLURM_JOB_NUM_NODES    \
     main_mt.py \
-        --batch_size 20 \
-        --epochs 60 \
+        --batch_size 24 \
+        --epochs 200 \
         --input_size 224 \
-        --blr 6e-4 --weight_decay 0.05 \
+        --blr 5e-4 --weight_decay 0.05 \
         --warmup_epochs 10 \
         --times 10 \
         --cycle \
-        --model mtvit_task2_small \
+        --model mtvit_mlp16E4_small \
         --drop_path 0.1 \
         --exp-name ${EXP} \
 

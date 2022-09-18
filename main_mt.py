@@ -34,7 +34,6 @@ from fvcore.nn import FlopCountAnalysis, flop_count_str
 from ptflops import get_model_complexity_info
 
 
-
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_mt.py \
 #         --batch_size 20 \
 #         --epochs 100 \
@@ -269,7 +268,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
-        drop_last=False
+        drop_last=True
     )
 
     
@@ -310,11 +309,15 @@ def main(args):
         print('model_name:', args.model)
         
         t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
-        flops = FlopCountAnalysis(model, (torch.randn(16,3,224,224).to(device), t_mg_types[0], True))
+        flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
         print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
 
-        # macs, params = get_model_complexity_info(model, (3, 224, 224), as_strings=True,
-        #                                        print_per_layer_stat=True, verbose=True)
+        # def prepare_input(resolution):
+        #     x1 = torch.FloatTensor(6, *resolution).to(device)
+        #     return dict(x=x1, task=t_mg_types[0], get_flop=True)
+
+        # macs, params = get_model_complexity_info(model, (3, 224, 224), input_constructor=prepare_input, as_strings=True,
+        #                                        print_per_layer_stat=True)
         # print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
         # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 

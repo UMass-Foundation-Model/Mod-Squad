@@ -207,9 +207,25 @@ class MoEAttention(nn.Module):
         inner_dim = num_heads * head_dim
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale or head_dim ** -0.5
+        self.moe_type = moe_type
 
         if moe_type == 'random':
             self.q_proj = RandomMoE(dim, head_dim, num_experts, num_heads, cvloss=cvloss, switchloss=switchloss, zloss=zloss)
+        elif moe_type == 'FLOP': # use this to evaluate FLOPs
+            self.att_experts = [
+                nn.Sequential(
+                    nn.Linear(dim, head_dim),
+                )
+                for _ in range(num_experts)
+            ]
+            self.q_proj = MMoE(dim, self.att_experts, num_heads, dropout=0., concat=True)
+            self.out_proj = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(head_dim, dim),
+                    nn.Dropout(0.)
+                )
+                for _ in range(num_experts)
+            ])
         else:
             self.q_proj = MoE(dim, head_dim, num_experts, num_heads, cvloss=cvloss, switchloss=switchloss, zloss=zloss)
 
@@ -225,7 +241,11 @@ class MoEAttention(nn.Module):
 
         B, N, C = x.shape
         # qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, aux_loss = self.q_proj.map(x, sample_topk=self.sample_topk)
+        
+        if self.moe_type == 'FLOP':
+            q, aux_loss = self.q_proj(x, multiply_by_gates=False, sample_topk=self.sample_topk)
+        else:
+            q, aux_loss = self.q_proj.map(x, sample_topk=self.sample_topk)
         k, v = self.kv_proj(x).chunk(2, dim=-1)
 
         q = q.reshape(B, N, self.num_heads, self.head_dim)
@@ -252,7 +272,23 @@ class MoEAttention(nn.Module):
 
         attn = torch.einsum('bhij,bjd->bihd', attn, v)
 
-        x = self.q_proj.reduce(attn)
+        # attn_output = torch.einsum('bijh,bjd->bihd', attn_output_weights, v)
+
+        # assert list(attn_output.size()) == [
+        #     bsz, length, self.heads, self.dim_head]
+
+        # attn_output = self.q_proj.dispatch(
+        #     attn_output.reshape(bsz, length, self.heads, self.dim_head).contiguous(), 
+        #     self.out_proj
+        #     )
+
+        if self.moe_type == 'FLOP':
+            x = self.q_proj.dispatch(
+                    attn.reshape(B, N, self.num_heads, self.head_dim).contiguous(), 
+                    self.out_proj
+                )
+        else:
+            x = self.q_proj.reduce(attn)
         x = self.proj_drop(x)
         return x, aux_loss
 
@@ -502,28 +538,34 @@ class MoEnhanceBlock(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
 
-        self.mlp = MoE(dim,
-                mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
-                cvloss=cvloss,
-                switchloss=switchloss,
-                zloss=zloss,
-                activation=nn.Sequential(
+        if moe_type == 'FLOP':
+            ffd_exports = [
+                    nn.Sequential(
+                    # nn.LayerNorm(dim),
+                    nn.Linear(dim, mlp_hidden_dim // ffd_heads),
                     nn.GELU(),
-                    # self.dropout_module Remove dropout for now
-                ),
-                noisy_gating=ffd_noise
-            )
+                    # nn.Dropout(dropout),
+                    nn.Linear(mlp_hidden_dim // ffd_heads, dim),
+                    # nn.Dropout(dropout)
+                    # nn.LayerNorm(dim),
+                    )
+                    for _ in range(num_ffd_experts)
+                ]
+            self.mlp = MMoE(dim, ffd_exports, ffd_heads, 0.)
+        else:
+            self.mlp = MoE(dim,
+                    mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
+                    cvloss=cvloss,
+                    switchloss=switchloss,
+                    zloss=zloss,
+                    activation=nn.Sequential(
+                        nn.GELU(),
+                        # self.dropout_module Remove dropout for now
+                    ),
+                    noisy_gating=ffd_noise
+                )
         self.post_layer_norm = post_layer_norm
         assert z_weight == 0
-
-    # post layer norm | pre layer norm 
-    # topk_gating / topk_gating.sum()
-    # switchloss=0.01 * 1, zloss=0.001 * 1
-    # Learning rate
-    # feedforward topk=4. 
-    # learning rate
-    # head_size * 4 
-    # 
 
     def forward(self, x, mask=None):
         if self.post_layer_norm:

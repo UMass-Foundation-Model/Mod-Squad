@@ -4,10 +4,11 @@ from datetime import datetime
 import shutil
 
 def run_main():
-    ngpus = 4      
-    nodes = 3
-    exp_name = 'mt_tiny_reshading_1e-4  '
+    ngpus = 6     
+    nodes = 10
+    exp_name = 'mtvit_small_x3'
     world_size = ngpus * nodes
+    # datetime object containing current date and time
     now = datetime.now()
      
     print("now =", now)
@@ -15,7 +16,7 @@ def run_main():
     # dd/mm/YY H:M:S
     dt_string = now.strftime("%d_%m_%Y_%H_%M_%S")
 
-    src_file = '/gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/aimos/mt_tiny_reshading.sh'
+    src_file = '/gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/aimos/mtvit_small_x3.sh'
     tgt_file = '/gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/aimos/save/' + str(dt_string)+ str(exp_name)+'.sh'
     shutil.copyfile(src_file , tgt_file)
 

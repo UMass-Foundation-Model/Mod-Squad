@@ -6,7 +6,7 @@ import shutil
 def run_main():
     ngpus = 6      
     nodes = 10
-    exp_name = 'medium_small_task2_cls_10_1e-4'
+    exp_name = 'medium_small_task2_cls_10_6e-4_60'
     world_size = ngpus * nodes
     # datetime object containing current date and time
     now = datetime.now()

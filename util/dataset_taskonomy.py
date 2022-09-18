@@ -9,33 +9,38 @@ from torchvision import transforms
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import PIL
+import skimage  
 
 all_tasks = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
-output[img_type] = rescale_image(output[img_type], new_scale[img_type], current_scale=current_scale[img_type], no_clip=no_clip[img_type])
-new_scale, current_scale, no_clip = {}, {}, {}
+# output[img_type] = rescale_image(output[img_type], new_scale[img_type], current_scale=current_scale[img_type], no_clip=no_clip[img_type])
+new_scale, current_scale, no_clip, preprocess = {}, {}, {}, {}
 
 for task in all_tasks:
     new_scale[task], current_scale[task], no_clip[task] = [-1.,1.], None, None
     preprocess[task] = False
 
-# class_object', '
+# class_object', ' xentropy
 
-# class_scene
+# class_scene xentropy
 
-# depth_euclidean
+# depth_euclidean l1_loss
 
-# keypoints2d
+# keypoints2d l1
 current_scale['keypoints2d'] = [0.0, 0.005]
 
 # keypoints3d
 
-# normal
+# normal l1_loss
 
-# principal_curvature
+# principal_curvature l2
+
+# reshading l1
+
+# segment_unsup2d metric_loss
+
 preprocess['principal_curvature'] = True
 
 def curvature_preprocess(img, new_dims, interp_order=1):
-    img = resize_image(img, new_dims, interp_order)
     img = img[:,:,:2]
     img = img - [123.572, 120.1]
     img = img / [31.922, 21.658]
@@ -55,7 +60,7 @@ def rescale_image(im, new_scale=[-1.,1.], current_scale=None, no_clip=False):
     Returns:
         rescaled_image
     """
-    # im = skimage.img_as_float(im).astype(np.float32)
+    im = skimage.img_as_float(im).astype(np.float32)
     if current_scale is not None:
         min_val, max_val = current_scale
         if not no_clip:
@@ -176,12 +181,11 @@ class TaskonomyDataset(data.Dataset):
                 output[img_type] = torch.from_numpy(target).float()
             else:
                 try:
-                    img = Image.open(self.data_list[img_type][index])
-                    img = skimage.img_as_float(img).astype(np.float32)
+                    img = Image.open(self.data_list[img_type][index])  
+                    np_img = np.array(img)  
                 except:
                     print(self.data_list[img_type][index])
                     img = Image.open(self.data_list[img_type][index-1])
-                    img = skimage.img_as_float(img).astype(np.float32)
 
                 imgs.append(img)
 
@@ -199,7 +203,8 @@ class TaskonomyDataset(data.Dataset):
             if random.random() < 0.5:
                 # imgs = [img.transpose(Image.FLIP_LEFT_RIGHT) for img in imgs]
                 imgs = [img.transpose(Image.Transpose.FLIP_LEFT_RIGHT) for img in imgs]
-                
+
+        # imgs = [skimage.img_as_float(img).astype(np.float32) for img in imgs]
 
         # Value operation on Tensor
         pos = 0
@@ -208,33 +213,38 @@ class TaskonomyDataset(data.Dataset):
                 # Note: Seems that only part of class_object is used
                 continue
             else:
+                output[img_type] = imgs[pos]
                 if 'depth' in img_type:
+                    output[img_type] = np.array(output[img_type])
                     output[img_type] = np.log(1+output[img_type]) / ( np.log( 2. ** 16.0 ) )
+                elif 'curvature' in img_type:
+                    output[img_type] = np.array(output[img_type])
+                    output[img_type] = curvature_preprocess(output[img_type], (256, 256))
                 else:
                     output[img_type] = rescale_image(output[img_type], new_scale[img_type], current_scale=current_scale[img_type], no_clip=no_clip[img_type])
                 
-                output[img_type] = torch.from_numpy(np.array(imgs[pos]))
-                if 'segment_semantic' in img_type:
-                    continue
-                if 'keypoints2d' in img_type:
-                    output[img_type] = output[img_type] / 4096.0 # I am not quite understand
-                if 'keypoints3d' in img_type:
-                    output[img_type] = output[img_type] / 65536.0
+                output[img_type] = torch.from_numpy(output[img_type])
+                # if 'segment_semantic' in img_type:
+                #     continue
+                # if 'keypoints2d' in img_type:
+                #     output[img_type] = output[img_type] / 4096.0 # I am not quite understand
+                # if 'keypoints3d' in img_type:
+                #     output[img_type] = output[img_type] / 65536.0
                 
-                # output[img_type] = output[img_type].float()
-                if 'edge' in img_type:
-                    output[img_type] = output[img_type] / 12000.0 # I am not quite understand
+                # # output[img_type] = output[img_type].float()
+                # if 'edge' in img_type:
+                #     output[img_type] = output[img_type] / 12000.0 # I am not quite understand
 
                 
 
-                # if img_type in max_v:
-                #     output[img_type] = (output[img_type] - min_v[img_type]) * 1.0 / (max_v[img_type] - min_v[img_type])
+                # # if img_type in max_v:
+                # #     output[img_type] = (output[img_type] - min_v[img_type]) * 1.0 / (max_v[img_type] - min_v[img_type])
                 
-                if 'segment_unsup2d' in img_type or 'segment_unsup25d' in img_type:
-                    output[img_type] = output[img_type]/255.0
+                # if 'segment_unsup2d' in img_type or 'segment_unsup25d' in img_type:
+                #     output[img_type] = output[img_type]/255.0
 
-                if 'rgb' in img_type or 'normal' in img_type or 'principal_curvature' in img_type or 'reshading' in img_type:
-                    output[img_type] = self.transform(output[img_type].permute(2,0,1)/255.0)
+                # if 'rgb' in img_type or 'normal' in img_type or 'principal_curvature' in img_type or 'reshading' in img_type:
+                #     output[img_type] = self.transform(output[img_type].permute(2,0,1)/255.0)
 
                 pos = pos + 1
 
@@ -246,39 +256,40 @@ class TaskonomyDataset(data.Dataset):
 import random
 if __name__ == '__main__':
     # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'nonfixated_matches', 'normal', 'point_info', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
-    img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
+    # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
     # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'rgb']
+    img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
     # rgb class_object class_scene depth_euclidean depth_zbuffer normal 
     # img_types = ['class_scene', 'class_object', 'rgb', 'normal', 'reshading', 'depth_euclidean', 'segment_unsup2d']
     # img_types = ['rgb', 'class_object', 'normal', 'depth_euclidean', 'keypoints2d']
-    # A = TaskonomyDataset(img_types, resize_scale=256)
+    A = TaskonomyDataset(img_types, resize_scale=224)
     # # print('done')
     # # A_test = TaskonomyDataset(img_types, resize_scale=256, partition='test')
     # # assert False
     # # print('len: ', len(A))
     # # B = A.__getitem__(32)
     # # # assert False
-    # for i in tqdm(range(len(A))):
-    #     t = random.randint(0,len(A)-1)
-    #     # print(t)
-    #     B = A.__getitem__(t)
-    # #     # print(B['edge_texture'][200:230, 200:230]/15000)
-    # #     # print(B['edge_texture'].min(), B['edge_texture'].max(), B['edge_texture'].mean())
-    # #     if i <5:
-    # #         for img_type in B.keys():
-    # #             print(img_type, B[img_type].min(), B[img_type].max())
-    #     if i > 50:
+    for i in tqdm(range(len(A))):
+        t = random.randint(0,len(A)-1)
+        # print(t)
+        B = A.__getitem__(t)
+    #     # print(B['edge_texture'][200:230, 200:230]/15000)
+    #     # print(B['edge_texture'].min(), B['edge_texture'].max(), B['edge_texture'].mean())
+        if i <5:
+            for img_type in B.keys():
+                print(img_type, B[img_type].min(), B[img_type].max())
+        if i > 50:
+            break
+    #     # print('i: ', i)
+    #     # if i==5:
+    #     #     for img_type in img_types:
+    #     #         print(img_type, B[img_type].min(), B[img_type].max(), B[img_type].shape)
+    # assert False
+    # train_loader = DataLoader(A, batch_size=32, num_workers=12, shuffle=False, pin_memory=True)
+    # for itr, data in tqdm(enumerate(train_loader)):
+    #     pass
+    #     if itr>400:
     #         break
-    # #     # print('i: ', i)
-    # #     # if i==5:
-    # #     #     for img_type in img_types:
-    # #     #         print(img_type, B[img_type].min(), B[img_type].max(), B[img_type].shape)
-    # # assert False
-    # # train_loader = DataLoader(A, batch_size=32, num_workers=12, shuffle=False, pin_memory=True)
-    # # for itr, data in tqdm(enumerate(train_loader)):
-    # #     pass
-    # #     if itr>400:
-    # #         break
 
     # print('min: ', A._min)
     # print('max: ', A._max)

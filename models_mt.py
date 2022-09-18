@@ -97,7 +97,6 @@ class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
         else:
             x = self.norm(x)
             x = x[:, 1:, :]
-            
 
         return x, 0
 
@@ -113,10 +112,11 @@ class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
         x = self.task_heads[task_rank](x)
 
         if get_flop:
-            if self.ismoe:
-                return x, z_loss
-            else:
-                return x
+            return x
+            # if self.ismoe:
+            #     return x, z_loss
+            # else:
+            #     return x
         return x, z_loss
 
 from models_vit import VisionTransformer
@@ -137,7 +137,7 @@ class MTVisionTransformerMoEAll(MTVisionTransformer):
 
         self.ismoe = True
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)] 
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.Sequential(*[
             MoEnhanceBlock(
                 num_attn_experts=num_attn_experts, head_dim=head_dim,
@@ -149,13 +149,93 @@ class MTVisionTransformerMoEAll(MTVisionTransformer):
             for i in range(depth)])
 
         self.apply(self._init_weights)
+        # self.gate_num = torch.zeros(48).float()
+        # self.gate_num.requires_grad=False
+
+        # for blk in self.blocks:
+        #     if moe_type != 'random' and moe_type!='FLOP':
+        #         blk.attn.q_proj.f_gate.data.fill_(0.00)
+        #         blk.mlp.f_gate.data.fill_(0.00)
+
+    def moa_init_weight(self, module):
+        if isinstance(module, (nn.Linear)):
+            module.weight.data.fill_(0.00)
+
+    def clear(self):
         self.gate_num = torch.zeros(48).float()
         self.gate_num.requires_grad=False
 
+    def forward_features(self, x, task_rank, task):
+        B = x.shape[0]
+        x = self.patch_embed(x)
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = x + self.pos_embed
+
+        # x = x + self.task_embedding[:,task_rank:task_rank+1, :]
+        x = self.pos_drop(x)
+
+        # apply Transformer blocks
+
+        z_loss = 0
         for blk in self.blocks:
-            if moe_type != 'random':
-                blk.attn.q_proj.f_gate.data.fill_(0.00)
-                blk.mlp.f_gate.data.fill_(0.00)
+            x = x + self.task_embedding[:,task_rank:task_rank+1, :]
+            x, aux_loss = blk(x)
+            z_loss = z_loss + aux_loss
+
+        # if self.global_pool:
+        #     x = x[:, 1:, :].mean(dim=1)  # global pool without cls token
+        #     outcome = self.fc_norm(x)
+        # else:
+        #     x = self.norm(x)
+        #     outcome = x[:, 0]
+        if 'class' in task:
+            x = x[:, 1:, :].mean(dim=1)
+            x = self.fc_norm(x)
+        else:
+            x = self.norm(x)
+            x = x[:, 1:, :]
+        
+
+        return x, z_loss
+
+# A gating for a task
+class MTVisionTransformerMoETaskGating(MTVisionTransformer):
+    def __init__(self, img_types, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, 
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None, 
+                 num_attn_experts=48, head_dim=None,
+                 num_ffd_experts=16, ffd_heads=2, ffd_noise=True,
+                 moe_type='normal',
+                 switchloss=0.01 * 1, zloss=0.001 * 1,
+                 post_layer_norm=False,
+                 **kwargs):
+        super(MTVisionTransformerMoETaskGating, self).__init__(img_types,
+            embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,  
+            drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate, norm_layer=norm_layer, 
+            **kwargs)
+
+        self.ismoe = True
+
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+        self.blocks = nn.Sequential(*[
+            MoEnhanceBlock(
+                num_attn_experts=num_attn_experts, head_dim=head_dim,
+                num_ffd_experts=num_ffd_experts, ffd_heads=ffd_heads, ffd_noise=ffd_noise,
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
+                moe_type=moe_type,switchloss=switchloss, zloss=zloss, post_layer_norm=post_layer_norm,
+                )
+            for i in range(depth)])
+
+        self.apply(self._init_weights)
+        # self.gate_num = torch.zeros(48).float()
+        # self.gate_num.requires_grad=False
+
+        # for blk in self.blocks:
+        #     if moe_type != 'random' and moe_type!='FLOP':
+        #         blk.attn.q_proj.f_gate.data.fill_(0.00)
+        #         blk.mlp.f_gate.data.fill_(0.00)
 
     def moa_init_weight(self, module):
         if isinstance(module, (nn.Linear)):
@@ -255,18 +335,88 @@ def mtvit_task1_tiny(img_types, **kwargs):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def mtvit_small(img_types, **kwargs): # 23.48M 73G
+def mtvit_small(img_types, **kwargs): # 23.48M 4.6G
     model = MTVisionTransformer(img_types,
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 
-def mtvit_task0_small(img_types, **kwargs): # 16.47G
+def mtvit_small_x2(img_types, **kwargs): # 46.04M 5.2G bsz24
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6,  qkv_bias=True,
+        num_attn_experts=12, head_dim=384//6 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=4,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_small_x2_flop(img_types, **kwargs): # 46.04M 5.21G bsz 24
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6,  qkv_bias=True,
+        num_attn_experts=12, head_dim=384//6 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=4,
+        moe_type='FLOP',
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_small_x3(img_types, **kwargs): # 67.36M 5.2G bsz24
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6,  qkv_bias=True,
+        num_attn_experts=18, head_dim=384//6 * 2,
+        num_ffd_experts=3, ffd_heads=1, ffd_noise=True, mlp_ratio=4,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_small_x3_flop(img_types, **kwargs): # 67.36M 5.21G bsz 24
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6,  qkv_bias=True,
+        num_attn_experts=18, head_dim=384//6 * 2,
+        num_ffd_experts=3, ffd_heads=1, ffd_noise=True, mlp_ratio=4,
+        moe_type='FLOP',
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_mlp16E4_small(img_types, **kwargs): #
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=16, ffd_heads=4, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_mlp16E4_small(img_types, **kwargs): # 67.37M 5.21G
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=16, ffd_heads=4, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_mlp16E4_small_flop(img_types, **kwargs): # 67.37M 5.21G
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=16, ffd_heads=4, ffd_noise=True,
+        moe_type='FLOP',
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_task0_small(img_types, **kwargs): #
     model = MTVisionTransformerMoEAll(img_types, 
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         num_attn_experts=6, head_dim=384//6 * 2,
         num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+
+
+def mtvit_task0_small_flop(img_types, **kwargs): # 24.72M 5.2G
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        moe_type='FLOP',
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
@@ -278,11 +428,28 @@ def mtvit_task1_small(img_types, **kwargs):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def mtvit_task2_small(img_types, **kwargs): # 60.17M 16G
+def mtvit_task2_small(img_types, **kwargs): # 60.17M 
     model = MTVisionTransformerMoEAll(img_types, 
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         num_attn_experts=6 + 3 * 2, head_dim=384//6 * 2,
         num_ffd_experts=2 + 2 * 2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_task2_small_att(img_types, **kwargs): # 
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6 + 3 * 2, head_dim=384//6 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_task2_small_flop(img_types, **kwargs): # 60.25M 5.2G
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6 + 3 * 2, head_dim=384//6 * 2,
+        num_ffd_experts=2 + 2 * 2, ffd_heads=2, ffd_noise=True,
+        moe_type='FLOP',
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
@@ -377,7 +544,7 @@ def mtvit_base_moe1(img_types, **kwargs):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def mtvit_base_moe2(img_types, **kwargs): # FLOPS 341G
+def mtvit_base_moe2(img_types, **kwargs): # 
     model = MTVisionTransformerMoEAll(img_types, 
         patch_size=16, embed_dim=768, depth=12,  qkv_bias=True,
         num_attn_experts=12, num_heads=12, head_dim=768//12 * 2,
@@ -473,17 +640,121 @@ def mtvit_base_patch16(img_types, **kwargs):
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def mtvit_base(img_types, **kwargs): # 89.42M 281G
+def mtvit_base(img_types, **kwargs): # 89.42M 17.58G
     model = MTVisionTransformer(img_types,
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-def mtvit_task0_base(img_types, **kwargs): # 33.29G
+def mtvit_task0_base(img_types, **kwargs): 
     model = MTVisionTransformerMoEAll(img_types, 
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         num_attn_experts=12, head_dim=768//12 * 2,
         num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_task0_base_flop(img_types, **kwargs): # 91.96M 18.78Gs
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=12, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        moe_type='FLOP', 
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_12E3_8E2R1(img_types, **kwargs): # 92.12M 5.17Gs
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=12, head_dim=768//12 * 2,
+        num_ffd_experts=8, ffd_heads=2, ffd_noise=True, mlp_ratio=1,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_12E3_8E2R1_flop(img_types, **kwargs): # 92.12M 5.17Gs bsz18
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=12, head_dim=768//12 * 2,
+        num_ffd_experts=8, ffd_heads=2, ffd_noise=True, mlp_ratio=1,
+        moe_type='FLOP', 
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_9E1R4_9E1R1(img_types, **kwargs): # 179M 5.05Gs bsz 32
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=1, qkv_bias=True,
+        num_attn_experts=9, head_dim=768//12 * 4,
+        num_ffd_experts=9, ffd_heads=1, ffd_noise=True, mlp_ratio=1,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_9E1R4_9E1R1_flop(img_types, **kwargs): # 179M 5.05Gs bsz 32
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=1, qkv_bias=True,
+        num_attn_experts=9, head_dim=768//12 * 4,
+        num_ffd_experts=9, ffd_heads=1, ffd_noise=True, mlp_ratio=1,
+        moe_type='FLOP', 
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+
+def mtvit_base_12E6_2E1R2_flop(img_types, **kwargs): # 92.01M 9.7Gs bsz20
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=6, qkv_bias=True,
+        num_attn_experts=12, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=2,
+        moe_type='FLOP', 
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_6E3_2E1R2(img_types, **kwargs): # 77.74M 7.94Gs bsz20
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=6, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=2,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_6E3_2E1R2_flop(img_types, **kwargs): # 77.74M 7.94Gs bsz20
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=6, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=2,
+        moe_type='FLOP', 
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_6E3_2E2R1(img_types, **kwargs): # 35.24M 5.15Gs bsz22
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=6, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True, mlp_ratio=1,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_6E3_2E2R1_flop(img_types, **kwargs): # 35.24M 5.15Gs bsz20
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=6, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=2, ffd_noise=True, mlp_ratio=1,
+        moe_type='FLOP', 
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_6E3_2E1R1(img_types, **kwargs): # 35.24M 5.15Gs bsz22
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=6, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=1,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_base_6E3_2E1R1_flop(img_types, **kwargs): # 35.24M 5.15Gs bsz22
+    model = MTVisionTransformerMoEAll(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=6, head_dim=768//12 * 2,
+        num_ffd_experts=2, ffd_heads=1, ffd_noise=True, mlp_ratio=1,
+        moe_type='FLOP', 
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
