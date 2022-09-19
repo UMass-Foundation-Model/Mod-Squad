@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from einops.layers.torch import Rearrange
 
-from models_mae import PatchEmbed, Attention, MoAttention, Mlp, Block, MoABlock, MoEBlock, MoEMlpBlock, MoEMlp, MoEnhanceBlock
+from models_mae import PatchEmbed, Attention, MoAttention, Mlp, Block, MoABlock, MoEBlock, MoEMlpBlock, MoEMlp, MoEnhanceBlock, MoEnhanceTaskBlock
 
 import timm.models.vision_transformer
 class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
@@ -23,7 +23,10 @@ class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
     """
     def __init__(self, img_types, embed_dim=768, global_pool=True, **kwargs):
         super(MTVisionTransformer, self).__init__(embed_dim=embed_dim, **kwargs)
+        self.taskGating = False
         self.ismoe = False
+
+        self.moe_type = 'normal'
 
         self.img_types = [type_ for type_ in img_types if type_ != 'rgb']
         assert global_pool == True
@@ -134,7 +137,7 @@ class MTVisionTransformerMoEAll(MTVisionTransformer):
             embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,  
             drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate, norm_layer=norm_layer, 
             **kwargs)
-
+        self.moe_type = moe_type
         self.ismoe = True
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -215,11 +218,16 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
             drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate, norm_layer=norm_layer, 
             **kwargs)
 
+        self.moe_type = moe_type
+
+        self.taskGating = True
         self.ismoe = True
+        self.task_num = len(self.img_types)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.Sequential(*[
-            MoEnhanceBlock(
+            MoEnhanceTaskBlock(
+                task_num=self.task_num,
                 num_attn_experts=num_attn_experts, head_dim=head_dim,
                 num_ffd_experts=num_ffd_experts, ffd_heads=ffd_heads, ffd_noise=ffd_noise,
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
@@ -229,23 +237,28 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
             for i in range(depth)])
 
         self.apply(self._init_weights)
-        # self.gate_num = torch.zeros(48).float()
-        # self.gate_num.requires_grad=False
-
-        # for blk in self.blocks:
-        #     if moe_type != 'random' and moe_type!='FLOP':
-        #         blk.attn.q_proj.f_gate.data.fill_(0.00)
-        #         blk.mlp.f_gate.data.fill_(0.00)
 
     def moa_init_weight(self, module):
         if isinstance(module, (nn.Linear)):
             module.weight.data.fill_(0.00)
 
-    def clear(self):
-        self.gate_num = torch.zeros(48).float()
-        self.gate_num.requires_grad=False
+    def get_zloss(self):
+        z_loss = 0
+        for blk in self.blocks:
+            aux_loss = blk.attn.q_proj.get_aux_loss_and_clear()
+            z_loss = z_loss + aux_loss
 
-    def forward_features(self, x, task_rank, task):
+            # break
+            aux_loss = blk.mlp.get_aux_loss_and_clear()
+            z_loss = z_loss + aux_loss
+        return z_loss
+
+    def all_clear(self):
+        for blk in self.blocks:
+            aux_loss = blk.attn.q_proj.init_aux_statistics()
+            aux_loss = blk.mlp.init_aux_statistics()
+
+    def forward_features(self, x):
         B = x.shape[0]
         x = self.patch_embed(x)
 
@@ -254,31 +267,38 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
         x = x + self.pos_embed
 
         # x = x + self.task_embedding[:,task_rank:task_rank+1, :]
-        x = self.pos_drop(x)
+        x_before = self.pos_drop(x)
 
         # apply Transformer blocks
 
-        z_loss = 0
-        for blk in self.blocks:
-            x = x + self.task_embedding[:,task_rank:task_rank+1, :]
-            x, aux_loss = blk(x)
-            z_loss = z_loss + aux_loss
+        output = {}
+        for t, the_type in enumerate(self.img_types):
+            x = x_before
+            for blk in self.blocks:
+                x = x + self.task_embedding[:, t:t+1, :]
+                x, _ = blk(x, t)
 
-        # if self.global_pool:
-        #     x = x[:, 1:, :].mean(dim=1)  # global pool without cls token
-        #     outcome = self.fc_norm(x)
-        # else:
-        #     x = self.norm(x)
-        #     outcome = x[:, 0]
-        if 'class' in task:
-            x = x[:, 1:, :].mean(dim=1)
-            x = self.fc_norm(x)
-        else:
-            x = self.norm(x)
-            x = x[:, 1:, :]
+            if 'class' in the_type:
+                x = x[:, 1:, :].mean(dim=1)
+                x = self.fc_norm(x)
+            else:
+                x = self.norm(x)
+                x = x[:, 1:, :]
+            output[the_type] = x
         
+        return output, 0
 
-        return x, z_loss
+    def forward(self, x, task, get_flop=False, get_z_loss=False):
+
+        output, z_loss = self.forward_features(x)
+        for t, the_type in enumerate(self.img_types):
+            output[the_type] = self.task_heads[t](output[the_type])
+
+        if get_flop:
+            return output['class_object']
+
+        # self.all_clear()
+        return output, self.get_zloss()
 
 def mtvit_tiny(img_types, **kwargs): # 6.43M 
     model = MTVisionTransformer(img_types,
@@ -384,6 +404,14 @@ def mtvit_mlp16E4_small(img_types, **kwargs): #
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
+def mtvit_taskgate_mlp16E4_small(img_types, **kwargs): # 67.37M 5.21G
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=16, ffd_heads=4, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
 def mtvit_mlp16E4_small(img_types, **kwargs): # 67.37M 5.21G
     model = MTVisionTransformerMoEAll(img_types, 
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
@@ -441,6 +469,22 @@ def mtvit_task2_small_att(img_types, **kwargs): #
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         num_attn_experts=6 + 3 * 2, head_dim=384//6 * 2,
         num_ffd_experts=2, ffd_heads=2, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_small_att(img_types, **kwargs): # 68.46M
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, qkv_bias=True,
+        num_attn_experts=6 + 9, head_dim=384//6 * 2,
+        num_ffd_experts=1, ffd_heads=1, ffd_noise=False, mlp_ratio=4,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_small_att_mlp(img_types, **kwargs): # 68.46M
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, qkv_bias=True,
+        num_attn_experts=6 + 9, head_dim=384//6 * 2,
+        num_ffd_experts=16, ffd_heads=4, ffd_noise=True, mlp_ratio=4,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 

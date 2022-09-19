@@ -41,7 +41,7 @@ from ptflops import get_model_complexity_info
 #         --blr 5e-4 --weight_decay 0.05 \
 #         --warmup_epochs 10 \
 #         --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
-#         --model mtvit_small \
+#         --model mtvit_taskgate_mlp16E4_small \
 #         --drop_path 0.1 \
 #         --times 5 \
 #         --cycle \
@@ -308,9 +308,10 @@ def main(args):
         print("Model = %s" % str(model_without_ddp))
         print('model_name:', args.model)
         
-        t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
-        flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
-        print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
+        if model_without_ddp.moe_type == 'FLOP' or model_without_ddp.ismoe == False:
+            t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
+            flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
+            print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
 
         # def prepare_input(resolution):
         #     x1 = torch.FloatTensor(6, *resolution).to(device)

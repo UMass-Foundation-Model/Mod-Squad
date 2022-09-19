@@ -36,7 +36,7 @@ python -m torch.distributed.launch \
     --nproc_per_node ${P_PER_NODE}  \
     --nnodes $SLURM_JOB_NUM_NODES    \
     main_mt.py \
-        --batch_size 24 \
+        --batch_size 20 \
         --epochs 200 \
         --input_size 224 \
         --blr 5e-4 --weight_decay 0.05 \

@@ -29,7 +29,7 @@ from moe import cvMoE
 # from mixture_of_experts import MoE as newMoE
 from oldmoe import MoE as oldMoE
 
-from parallel_experts import RandomMoE
+from parallel_experts import RandomMoE, TaskMoE
 
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -271,16 +271,6 @@ class MoEAttention(nn.Module):
         attn = self.attn_drop(attn)
 
         attn = torch.einsum('bhij,bjd->bihd', attn, v)
-
-        # attn_output = torch.einsum('bijh,bjd->bihd', attn_output_weights, v)
-
-        # assert list(attn_output.size()) == [
-        #     bsz, length, self.heads, self.dim_head]
-
-        # attn_output = self.q_proj.dispatch(
-        #     attn_output.reshape(bsz, length, self.heads, self.dim_head).contiguous(), 
-        #     self.out_proj
-        #     )
 
         if self.moe_type == 'FLOP':
             x = self.q_proj.dispatch(
@@ -584,6 +574,117 @@ class MoEnhanceBlock(nn.Module):
             y, aux_loss = self.mlp(self.norm2(x))
             x = x + self.drop_path(y)
             return x, z_loss + aux_loss
+
+class MoETaskAttention(nn.Module):
+    def __init__(self, dim, task_num=9, num_experts=24, num_heads=8, head_dim=None, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
+        sample_topk=2, cvloss=0, switchloss=0.01 * 10, zloss=0.001 * 1, moe_type='normal'):
+        super().__init__()
+        self.task_num = task_num
+        self.num_experts = num_experts
+        self.sample_topk = sample_topk
+
+        self.num_heads = num_heads
+        if head_dim is None:
+            head_dim = dim // num_heads
+        self.head_dim = head_dim
+        inner_dim = num_heads * head_dim
+        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
+        self.scale = qk_scale or head_dim ** -0.5
+        self.moe_type = moe_type
+
+        self.q_proj = TaskMoE(dim, head_dim, num_experts, num_heads, acc_aux_loss=True, task_num=task_num, cvloss=cvloss, switchloss=switchloss, zloss=zloss)
+
+        self.kv_proj = nn.Sequential(
+            nn.Linear(dim, head_dim * 2),
+        )
+
+        self.attn_drop = nn.Dropout(attn_drop)
+        # self.proj = nn.Linear(inner_dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x, task_bh, mask=None):
+
+        B, N, C = x.shape
+        # qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        
+        q, aux_loss = self.q_proj.map(x, task_bh, sample_topk=self.sample_topk)
+        k, v = self.kv_proj(x).chunk(2, dim=-1)
+
+        q = q.reshape(B, N, self.num_heads, self.head_dim)
+        k = k.reshape(B, N, self.head_dim)
+        v = v.reshape(B, N, self.head_dim)
+
+        attn = torch.einsum('bihd,bjd->bhij', q, k) * self.scale
+        # attn = attn.premute(0,3,1,2) # b, h, i, j
+
+        if mask is not None:
+            mask = mask.bool()
+            attn = attn.masked_fill(~mask[:, None, None, :], float("-inf"))
+
+        # For rare cases, the attention weights are inf due to the mix-precision training.
+        # We clamp the tensor to the max values of the current data type
+        # This is different from MAE training as we don't observe such cases on image-only MAE.
+        if torch.isinf(attn).any():
+            clamp_value = torch.finfo(attn.dtype).max-1000
+            attn = torch.clamp(attn, min=-clamp_value, max=clamp_value)
+
+        attn = attn.softmax(dim=-1)
+
+        attn = self.attn_drop(attn)
+
+        attn = torch.einsum('bhij,bjd->bihd', attn, v)
+
+        if self.moe_type == 'FLOP':
+            x = self.q_proj.dispatch(
+                    attn.reshape(B, N, self.num_heads, self.head_dim).contiguous(), 
+                    self.out_proj
+                )
+        else:
+            x = self.q_proj.reduce(attn)
+        x = self.proj_drop(x)
+        return x, aux_loss
+
+class MoEnhanceTaskBlock(nn.Module):
+
+    def __init__(self, dim, num_heads, num_attn_experts=24, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+                 num_ffd_experts=16, ffd_heads=2, ffd_noise=True,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, head_dim=None, init_values=None, z_weight=0.000,
+                 post_layer_norm=False,
+                 task_num=9,
+                 cvloss=0, switchloss=0.01 * 1, zloss=0.001 * 1, sample_topk=0, moe_type='normal'):
+        super().__init__()
+        self.task_num = task_num
+        self.norm1 = norm_layer(dim)
+        self.attn = MoETaskAttention(
+            dim, task_num=task_num, num_heads=num_heads, num_experts=num_attn_experts, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop,
+            cvloss=cvloss, switchloss=switchloss, zloss=zloss, sample_topk=sample_topk, moe_type=moe_type)
+        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+
+        self.mlp = TaskMoE(dim,
+                mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
+                acc_aux_loss=True, 
+                cvloss=cvloss,
+                switchloss=switchloss,
+                zloss=zloss,
+                task_num=task_num,
+                activation=nn.Sequential(
+                    nn.GELU(),
+                    # self.dropout_module Remove dropout for now
+                ),
+                noisy_gating=ffd_noise
+            )
+        assert z_weight == 0
+
+    def forward(self, x, task_bh, mask=None):
+        y, z_loss = self.attn(self.norm1(x), task_bh, mask=mask)
+        x = x + self.drop_path(y)
+
+        y, aux_loss = self.mlp(self.norm2(x), task_bh)
+        x = x + self.drop_path(y)
+        return x, z_loss + aux_loss
 
 class MaskedAutoencoderViT(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone

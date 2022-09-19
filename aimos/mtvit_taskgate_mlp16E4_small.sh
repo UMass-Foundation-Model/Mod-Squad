@@ -39,11 +39,11 @@ python -m torch.distributed.launch \
         --batch_size 20 \
         --epochs 200 \
         --input_size 224 \
-        --blr 5e-4 --weight_decay 0.05 \
+        --blr 6e-4 --weight_decay 0.05 \
         --warmup_epochs 10 \
         --times 10 \
         --cycle \
-        --model mtvit_mlp16E4_small \
+        --model mtvit_taskgate_mlp16E4_small \
         --drop_path 0.1 \
         --exp-name ${EXP} \
 
