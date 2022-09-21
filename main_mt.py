@@ -417,6 +417,11 @@ if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
 
+    if os.getcwd()[:26] == '/gpfs/u/barn/AICD/AICDzich' or os.getcwd()[:26] == '/gpfs/u/home/AICD/AICDzich':
+        pass
+    else:
+        args.output_dir = '/gpfs/u/home/LMCG/LMCGzich/scratch/work_dirs/MTMoe'
+        args.log_dir = '/gpfs/u/home/LMCG/LMCGzich/scratch/work_dirs/logs_MTMoe'
     # args.output_dir = '/data/zitianchen/work_dirs/MTMoe'
     # args.log_dir = '/data/zitianchen/work_dirs/logs_MTMoe'
 

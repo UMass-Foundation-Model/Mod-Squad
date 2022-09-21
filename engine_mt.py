@@ -22,6 +22,21 @@ import util.misc as misc
 import util.lr_sched as lr_sched
 import torch.nn.functional as F
 
+def loss_and_metric(outputs, targets, task):
+    if 'class' in task:
+        task_loss = F.mse_loss(outputs, targets.squeeze(1))
+    elif 'segment_semantic' in task:
+        task_loss = criterion(outputs, targets)
+    elif 'normal' in task:
+        targets = targets.permute(0,2,3,1)
+        task_loss = (1 - (outputs*targets).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
+    else:
+        if outputs.shape[-1] == 1:
+            outputs = outputs.view(outputs.shape[:-1])
+        elif outputs.shape[-1] == 3:
+            outputs = outputs.permute(0,3,1,2)
+        task_loss = F.mse_loss(outputs, targets)
+    
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -61,6 +76,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         the_loss = {}
         loss_list = []
         tot_loss = 0
+
+        # if misc.is_main_process():
+        #     if data_iter_step > 0 and data_iter_step%20 == 0:
+        #         model.module.visualize(vis_head=False, vis_mlp=True)
 
         # with torch.autograd.set_detect_anomaly(True):
         with torch.cuda.amp.autocast():
@@ -181,8 +200,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
+    # if misc.is_main_process():
     print("Averaged stats:", metric_logger)
     print('params: ', AWL.params)
+    # model.module.visualize(vis_head=False, vis_mlp=True)
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -198,9 +220,9 @@ def evaluate(data_loader, model, device, AWL, args):
     AWL.eval()
 
     for data in metric_logger.log_every(data_loader, 10, header):
-        images = data['rgb']
+        samples = data['rgb']
         # target = batch[-1]
-        images = images.to(device, non_blocking=True)
+        samples = samples.to(device, non_blocking=True)
         # target = target.to(device, non_blocking=True)
 
         # # compute output
@@ -212,7 +234,6 @@ def evaluate(data_loader, model, device, AWL, args):
         loss_list = []
         tot_loss = 0
         with torch.cuda.amp.autocast():
-
             if model.module.taskGating:
                 outputs, _ = model(samples, None)
                 # z_loss = z_loss + aux_loss
@@ -240,8 +261,8 @@ def evaluate(data_loader, model, device, AWL, args):
                 for task in args.img_types:
                     if 'rgb' in task:
                         continue
-                    outputs, aux_loss = model(samples, task)
-                    z_loss = z_loss + aux_loss
+                    outputs, _ = model(samples, task)
+                    # z_loss = z_loss + aux_loss
 
                     targets = data[task].to(device, non_blocking=True)
                     if 'class' in task:
@@ -264,7 +285,7 @@ def evaluate(data_loader, model, device, AWL, args):
         loss = AWL(loss_list)
         # acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
-        batch_size = images.shape[0]
+        batch_size = samples.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.update(tot_loss=tot_loss)
         # metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)

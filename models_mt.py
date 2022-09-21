@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from einops.layers.torch import Rearrange
 
-from models_mae import PatchEmbed, Attention, MoAttention, Mlp, Block, MoABlock, MoEBlock, MoEMlpBlock, MoEMlp, MoEnhanceBlock, MoEnhanceTaskBlock
+from models_mae import PatchEmbed, MoEnhanceBlock, MoEnhanceTaskBlock
 
 import timm.models.vision_transformer
 class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
@@ -258,6 +258,27 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
             aux_loss = blk.attn.q_proj.init_aux_statistics()
             aux_loss = blk.mlp.init_aux_statistics()
 
+    def visualize(self, vis_head=False, vis_mlp=False):
+        all_list = []
+        torch.set_printoptions(precision=2, sci_mode=False)
+
+        for depth, blk in enumerate(self.blocks):
+            layer_list = {}
+            for i, the_type in enumerate(self.img_types):
+                # print(the_type, ': ')
+                if vis_head:
+                    _sum = blk.attn.q_proj.task_gate_freq[i].sum()
+                    layer_list[the_type] = (blk.attn.q_proj.task_gate_freq[i] / _sum * 100).tolist()
+                    # print('L', depth, ' attn: ', blk.attn.q_proj.task_gate_freq[i] / _sum * 100)
+                if vis_mlp:
+                    _sum = blk.mlp.task_gate_freq[i].sum()
+                    layer_list[the_type] = (blk.mlp.task_gate_freq[i] / _sum * 100).tolist()
+                    # print('L', depth, ' mlp: ', blk.mlp.task_gate_freq[i] / _sum * 100)
+            all_list.append(layer_list)
+        print(all_list)
+        torch.save(all_list, '/gpfs/u/home/LMCG/LMCGzich/scratch/vis.t7')
+                
+
     def forward_features(self, x):
         B = x.shape[0]
         x = self.patch_embed(x)
@@ -485,6 +506,22 @@ def mtvit_taskgate_small_att_mlp(img_types, **kwargs): # 68.46M
         patch_size=16, embed_dim=384, depth=12, num_heads=6, qkv_bias=True,
         num_attn_experts=6 + 9, head_dim=384//6 * 2,
         num_ffd_experts=16, ffd_heads=4, ffd_noise=True, mlp_ratio=4,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_small_task0(img_types, **kwargs): # 60.17M 
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=4, ffd_heads=4, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_small_task2(img_types, **kwargs): # 60.17M 
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6 + 3 * 2, head_dim=384//6 * 2,
+        num_ffd_experts=2 + 2 * 2, ffd_heads=2, ffd_noise=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 

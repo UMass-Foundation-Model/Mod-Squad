@@ -17,3 +17,7 @@ srun --gres=gpu:$2 --cpus-per-task=48 -N $1 --mem=300G --time 6:00:00 --pty bash
 
 # rm /gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium/rgb/taskonomy/newfields/point_1070_view_8_domain_rgb.png
 # rsync -avz -e 'ssh' taskonomy_medium/rgb/taskonomy/newfields/point_1070_view_8_domain_rgb.png AICDzich@blp02.ccni.rpi.edu:/gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium/rgb/taskonomy/newfields
+
+# /gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium/rgb/taskonomy/muleshoe/point_399_view_5_domain_rgb.png
+# rm /gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium/rgb/taskonomy/muleshoe/point_399_view_5_domain_rgb.png
+# rsync -avz -e 'ssh' taskonomy_medium/rgb/taskonomy/muleshoe/point_399_view_5_domain_rgb.png AICDzich@blp02.ccni.rpi.edu:/gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium/rgb/taskonomy/muleshoes

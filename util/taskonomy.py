@@ -50,6 +50,12 @@ class TaskonomyDataset(data.Dataset):
     
     def __init__(self, img_types, data_dir='/gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium', 
         partition='train', transform=None, resize_scale=None, crop_size=None, fliplr=False):
+
+        if os.getcwd()[:26] == '/gpfs/u/barn/AICD/AICDzich' or os.getcwd()[:26] == '/gpfs/u/home/AICD/AICDzich':
+            pass
+        else:
+            data_dir='/gpfs/u/home/LMCG/LMCGzich/scratch/taskonomy_medium'
+
         super(TaskonomyDataset, self).__init__()
 
         self.resize_scale = resize_scale
@@ -71,6 +77,7 @@ class TaskonomyDataset(data.Dataset):
                     no_list = {'brinnon', 'cauthron', 'cochranton', 'donaldson', 'german',
                         'castor', 'tokeland', 'andover', 'rogue', 'athens', 'broseley', 'tilghmanton', 'winooski', 'rosser', 'arkansaw', 'bonnie', 'willow', 'timberon', 'bohemia', 'micanopy', 'thrall', 'annona', 'byers', 'anaheim', 'duarte', 'wyldwood'
                     }
+                    new_list = {'ballou', 'tansboro', 'cutlerville', 'macarthur', 'rough', 'darnestown', 'maryhill', 'bowlus', 'tomkins', 'herricks', 'mosquito', 'brinnon'}
                     if scene in no_list:
                         continue
                     is_train, is_val, is_test = row[1], row[2], row[3]
@@ -364,7 +371,11 @@ if __name__ == '__main__':
     
     train_set = TaskonomyDataset(img_types, partition='test', resize_scale=298, crop_size=256, fliplr=True)
     print(len(train_set))
-    A = train_set.__getitem__(len(train_set)-10)
+    A = train_set.__getitem__(len(train_set)-1)
+    for bh in range(4459*32, len(train_set)):
+        print(bh)
+        A = train_set.__getitem__(bh)
+
     # B = train_set.__getitem__(10)
     # for img_type in img_types:
     #     print(B[img_type].shape)
