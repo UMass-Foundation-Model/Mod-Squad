@@ -36,6 +36,11 @@ def loss_and_metric(outputs, targets, task):
         elif outputs.shape[-1] == 3:
             outputs = outputs.permute(0,3,1,2)
         task_loss = F.mse_loss(outputs, targets)
+
+    # get the metric
+    if 'class' in task:
+        # correct_prediction = tf.equal(tf.argmax(final_output,1), tf.argmax(target, 1))
+        metric = (outputs.argmax(dim=-1) == target.argmax(dim==-1)).sum()
     
 
 
@@ -162,7 +167,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
-        metric_logger.update(zloss=z_loss_value)
+
+        if model.module.ismoe:
+            metric_logger.update(zloss=z_loss_value)
+
         for _key, value in the_loss_value.items():
             metric_logger.meters[_key].update(value)
 

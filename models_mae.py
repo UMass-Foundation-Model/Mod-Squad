@@ -295,7 +295,7 @@ class MoEnhanceBlock(nn.Module):
 
 class MoETaskAttention(nn.Module):
     def __init__(self, dim, task_num=9, num_experts=24, num_heads=8, head_dim=None, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
-        sample_topk=2, cvloss=0, switchloss=0.01 * 10, zloss=0.001 * 1, moe_type='normal'):
+        sample_topk=2, cvloss=0, switchloss=0.01 * 10, zloss=0.001 * 1, w_topk_loss=0.1, moe_type='normal'):
         super().__init__()
         self.task_num = task_num
         self.num_experts = num_experts
@@ -310,7 +310,7 @@ class MoETaskAttention(nn.Module):
         self.scale = qk_scale or head_dim ** -0.5
         self.moe_type = moe_type
 
-        self.q_proj = TaskMoE(dim, head_dim, num_experts, num_heads, acc_aux_loss=True, task_num=task_num, cvloss=cvloss, switchloss=switchloss, zloss=zloss)
+        self.q_proj = TaskMoE(dim, head_dim, num_experts, num_heads, acc_aux_loss=True, task_num=task_num, cvloss=cvloss, switchloss=switchloss, zloss=zloss, w_topk_loss=w_topk_loss)
 
         self.kv_proj = nn.Sequential(
             nn.Linear(dim, head_dim * 2),
@@ -369,13 +369,14 @@ class MoEnhanceTaskBlock(nn.Module):
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, head_dim=None, init_values=None, z_weight=0.000,
                  post_layer_norm=False,
                  task_num=9,
-                 cvloss=0, switchloss=0.01 * 1, zloss=0.001 * 1, sample_topk=0, moe_type='normal'):
+                 cvloss=0, switchloss=0.01 * 1, zloss=0.001 * 1, w_topk_loss=0.1, 
+                 sample_topk=0, moe_type='normal'):
         super().__init__()
         self.task_num = task_num
         self.norm1 = norm_layer(dim)
         self.attn = MoETaskAttention(
             dim, task_num=task_num, num_heads=num_heads, num_experts=num_attn_experts, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop,
-            cvloss=cvloss, switchloss=switchloss, zloss=zloss, sample_topk=sample_topk, moe_type=moe_type)
+            cvloss=cvloss, switchloss=switchloss, zloss=zloss, w_topk_loss=w_topk_loss, sample_topk=sample_topk, moe_type=moe_type)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -387,6 +388,7 @@ class MoEnhanceTaskBlock(nn.Module):
                 cvloss=cvloss,
                 switchloss=switchloss,
                 zloss=zloss,
+                w_topk_loss=w_topk_loss,
                 task_num=task_num,
                 activation=nn.Sequential(
                     nn.GELU(),

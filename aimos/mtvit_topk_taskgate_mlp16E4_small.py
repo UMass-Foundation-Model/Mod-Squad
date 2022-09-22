@@ -4,9 +4,9 @@ from datetime import datetime
 import shutil
 
 def run_main():
-    ngpus = 6   
-    nodes = 4
-    exp_name = 'medium_small_6e-4'
+    ngpus = 4    
+    nodes = 13
+    exp_name = 'mtvit_topk_taskgate_mlp16E4_small'
     world_size = ngpus * nodes
     # datetime object containing current date and time
     now = datetime.now()
@@ -16,7 +16,7 @@ def run_main():
     # dd/mm/YY H:M:S
     dt_string = now.strftime("%d_%m_%Y_%H_%M_%S")
 
-    src_file = '/gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/aimos/mt_small_6e-4.sh'
+    src_file = '/gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/aimos/mtvit_topk_taskgate_mlp16E4_small.sh'
     tgt_file = '/gpfs/u/home/AICD/AICDzich/barn/code/MTMoe/aimos/save/' + str(dt_string)+ str(exp_name)+'.sh'
     shutil.copyfile(src_file , tgt_file)
 
