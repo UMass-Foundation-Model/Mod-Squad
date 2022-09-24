@@ -14,6 +14,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 from einops.layers.torch import Rearrange
+import os 
 
 from models_mae import PatchEmbed, MoEnhanceBlock, MoEnhanceTaskBlock
 
@@ -36,7 +37,7 @@ class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
 
         # create task head
         self.task_heads = []
-        type_to_channel = {'depth_euclidean':1, 'depth_zbuffer':1, 'edge_occlusion':1, 'edge_texture':1, 'keypoints2d':1, 'keypoints3d':1, 'normal':3, 'principal_curvature':3,  'reshading':3, 'rgb':3, 'segment_semantic':18, 'segment_unsup2d':1, 'segment_unsup25d':1}
+        type_to_channel = {'depth_euclidean':1, 'depth_zbuffer':1, 'edge_occlusion':1, 'edge_texture':1, 'keypoints2d':1, 'keypoints3d':1, 'normal':3, 'principal_curvature':2,  'reshading':3, 'rgb':3, 'segment_semantic':18, 'segment_unsup2d':1, 'segment_unsup25d':1}
         image_height, image_width = self.patch_embed.img_size
         patch_height, patch_width = self.patch_embed.patch_size
         assert image_height == 224 and image_width == 224
@@ -270,7 +271,7 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
             aux_loss = blk.attn.q_proj.init_aux_statistics()
             aux_loss = blk.mlp.init_aux_statistics()
 
-    def visualize(self, vis_head=False, vis_mlp=False):
+    def visualize(self, vis_head=False, vis_mlp=False, model_name=''):
         all_list = []
         torch.set_printoptions(precision=2, sci_mode=False)
 
@@ -288,8 +289,11 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
                     # print('L', depth, ' mlp: ', blk.mlp.task_gate_freq[i] / _sum * 100)
             all_list.append(layer_list)
         print(all_list)
-        torch.save(all_list, '/gpfs/u/home/LMCG/LMCGzich/scratch/vis.t7')
-                
+
+        if os.getcwd()[:26] == '/gpfs/u/barn/AICD/AICDzich' or os.getcwd()[:26] == '/gpfs/u/home/AICD/AICDzich':
+            torch.save(all_list, '/gpfs/u/home/AICD/AICDzich/scratch/' + str(model_name) + '_vis.t7')
+        else:
+            torch.save(all_list, '/gpfs/u/home/LMCG/LMCGzich/scratch/' + str(model_name) + '_vis.t7')
 
     def forward_features(self, x):
         B = x.shape[0]

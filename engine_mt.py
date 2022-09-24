@@ -22,7 +22,7 @@ import util.misc as misc
 import util.lr_sched as lr_sched
 import torch.nn.functional as F
 
-def loss_and_metric(outputs, targets, task):
+def get_loss(outputs, targets, task):
     if 'class' in task:
         task_loss = F.mse_loss(outputs, targets.squeeze(1))
     elif 'segment_semantic' in task:
@@ -30,17 +30,26 @@ def loss_and_metric(outputs, targets, task):
     elif 'normal' in task:
         targets = targets.permute(0,2,3,1)
         task_loss = (1 - (outputs*targets).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
-    else:
+    elif 'depth' in task or 'keypoint' in task or 'reshading' in task or 'edge' in task or 'segment' in task:
         if outputs.shape[-1] == 1:
             outputs = outputs.view(outputs.shape[:-1])
         elif outputs.shape[-1] == 3:
             outputs = outputs.permute(0,3,1,2)
+        task_loss = F.l1_loss(outputs, targets)
+    else: # L2 curvature
+        if outputs.shape[-1] == 1:
+            outputs = outputs.view(outputs.shape[:-1])
+        elif outputs.shape[-1] > 1:
+            outputs = outputs.permute(0,3,1,2)
         task_loss = F.mse_loss(outputs, targets)
+    return task_loss
 
+def get_metric(outputs, targets, task):
     # get the metric
     if 'class' in task:
         # correct_prediction = tf.equal(tf.argmax(final_output,1), tf.argmax(target, 1))
         metric = (outputs.argmax(dim=-1) == target.argmax(dim==-1)).sum()
+    
     
 
 
@@ -73,8 +82,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             else:
                 lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
-        # samples = samples.to(device, non_blocking=True)
-        # targets = targets.to(device, non_blocking=True)
         samples = data['rgb'].to(device, non_blocking=True)
         z_loss = 0
         loss = 0
@@ -82,9 +89,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_list = []
         tot_loss = 0
 
-        # if misc.is_main_process():
-        #     if data_iter_step > 0 and data_iter_step%20 == 0:
-        #         model.module.visualize(vis_head=False, vis_mlp=True)
+        if args.visualize and misc.is_main_process():
+            if data_iter_step > 0 and data_iter_step%20 == 0:
+                model.module.visualize(vis_head=False, vis_mlp=True, args.model)
 
         # with torch.autograd.set_detect_anomaly(True):
         with torch.cuda.amp.autocast():
@@ -95,19 +102,20 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     if 'rgb' in task:
                         continue
                     targets = data[task].to(device, non_blocking=True)
-                    if 'class' in task:
-                        task_loss = F.mse_loss(outputs[task], targets.squeeze(1))
-                    elif 'segment_semantic' in task:
-                        task_loss = criterion(outputs[task], targets)
-                    elif 'normal' in task:
-                        targets = targets.permute(0,2,3,1)
-                        task_loss = (1 - (outputs[task]*targets).sum(-1) / torch.norm(outputs[task], p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
-                    else:
-                        if outputs[task].shape[-1] == 1:
-                            outputs[task] = outputs[task].view(outputs[task].shape[:-1])
-                        elif outputs[task].shape[-1] == 3:
-                            outputs[task] = outputs[task].permute(0,3,1,2)
-                        task_loss = F.mse_loss(outputs[task], targets)
+                    # if 'class' in task:
+                    #     task_loss = F.mse_loss(outputs[task], targets.squeeze(1))
+                    # elif 'segment_semantic' in task:
+                    #     task_loss = criterion(outputs[task], targets)
+                    # elif 'normal' in task:
+                    #     targets = targets.permute(0,2,3,1)
+                    #     task_loss = (1 - (outputs[task]*targets).sum(-1) / torch.norm(outputs[task], p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
+                    # else:
+                    #     if outputs[task].shape[-1] == 1:
+                    #         outputs[task] = outputs[task].view(outputs[task].shape[:-1])
+                    #     elif outputs[task].shape[-1] == 3:
+                    #         outputs[task] = outputs[task].permute(0,3,1,2)
+                    #     task_loss = F.mse_loss(outputs[task], targets)
+                    task_loss = get_loss(outputs[task], targets, task)
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
@@ -119,19 +127,20 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     z_loss = z_loss + aux_loss
 
                     targets = data[task].to(device, non_blocking=True)
-                    if 'class' in task:
-                        task_loss = F.mse_loss(outputs, targets.squeeze(1))
-                    elif 'segment_semantic' in task:
-                        task_loss = criterion(outputs, targets)
-                    elif 'normal' in task:
-                        targets = targets.permute(0,2,3,1)
-                        task_loss = (1 - (outputs*targets).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
-                    else:
-                        if outputs.shape[-1] == 1:
-                            outputs = outputs.view(outputs.shape[:-1])
-                        elif outputs.shape[-1] == 3:
-                            outputs = outputs.permute(0,3,1,2)
-                        task_loss = F.mse_loss(outputs, targets)
+                    # if 'class' in task:
+                    #     task_loss = F.mse_loss(outputs, targets.squeeze(1))
+                    # elif 'segment_semantic' in task:
+                    #     task_loss = criterion(outputs, targets)
+                    # elif 'normal' in task:
+                    #     targets = targets.permute(0,2,3,1)
+                    #     task_loss = (1 - (outputs*targets).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
+                    # else:
+                    #     if outputs.shape[-1] == 1:
+                    #         outputs = outputs.view(outputs.shape[:-1])
+                    #     elif outputs.shape[-1] == 3:
+                    #         outputs = outputs.permute(0,3,1,2)
+                    #     task_loss = F.mse_loss(outputs, targets)
+                    task_loss = get_loss(outputs, targets, task)
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
@@ -249,19 +258,7 @@ def evaluate(data_loader, model, device, AWL, args):
                     if 'rgb' in task:
                         continue
                     targets = data[task].to(device, non_blocking=True)
-                    if 'class' in task:
-                        task_loss = F.mse_loss(outputs[task], targets.squeeze(1))
-                    elif 'segment_semantic' in task:
-                        task_loss = criterion(outputs[task], targets)
-                    elif 'normal' in task:
-                        targets = targets.permute(0,2,3,1)
-                        task_loss = (1 - (outputs[task]*targets).sum(-1) / torch.norm(outputs[task], p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
-                    else:
-                        if outputs[task].shape[-1] == 1:
-                            outputs[task] = outputs[task].view(outputs[task].shape[:-1])
-                        elif outputs[task].shape[-1] == 3:
-                            outputs[task] = outputs[task].permute(0,3,1,2)
-                        task_loss = F.mse_loss(outputs[task], targets)
+                    task_loss = get_loss(outputs[task], targets, task)
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
@@ -270,22 +267,8 @@ def evaluate(data_loader, model, device, AWL, args):
                     if 'rgb' in task:
                         continue
                     outputs, _ = model(samples, task)
-                    # z_loss = z_loss + aux_loss
-
                     targets = data[task].to(device, non_blocking=True)
-                    if 'class' in task:
-                        task_loss = F.mse_loss(outputs, targets.squeeze(1))
-                    elif 'segment_semantic' in task:
-                        task_loss = criterion(outputs, targets)
-                    elif 'normal' in task:
-                        targets = targets.permute(0,2,3,1)
-                        task_loss = (1 - (outputs*targets).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
-                    else:
-                        if outputs.shape[-1] == 1:
-                            outputs = outputs.view(outputs.shape[:-1])
-                        elif outputs.shape[-1] == 3:
-                            outputs = outputs.permute(0,3,1,2)
-                        task_loss = F.mse_loss(outputs, targets)
+                    task_loss = get_loss(outputs, targets, task)
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])

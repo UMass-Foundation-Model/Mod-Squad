@@ -172,6 +172,8 @@ def get_args_parser():
     parser.add_argument('--cycle', action='store_true')
     parser.add_argument('--only_gate', action='store_true')
     parser.add_argument('--dynamic_lr', action='store_true')
+
+     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--the_task', type=str, default='',
                         help='The only one task')
 
@@ -386,16 +388,10 @@ def main(args):
                 loss_scaler=loss_scaler, epoch=epoch)
 
         test_stats = evaluate(data_loader_val, model, device, AWL, args)
-        # print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        # max_accuracy = max(max_accuracy, test_stats["acc1"])
-        # print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if log_writer is not None:
             for _key, value in test_stats.items():
                 log_writer.add_scalar('perf/test_' + str(_key), value, epoch)
-            # log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            # log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            # log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         **{f'test_{k}': v for k, v in test_stats.items()},

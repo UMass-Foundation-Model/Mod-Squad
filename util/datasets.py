@@ -23,7 +23,8 @@ from typing import Any, Callable, Optional, Tuple
 import PIL.Image
 import json
 from PIL import Image
-from util.taskonomy import TaskonomyDataset
+from util.dataset_taskonomy import TaskonomyDataset
+# from util.taskonomy import TaskonomyDataset
 
 class SUN397(VisionDataset):
     """`The SUN397 Data Set <https://vision.princeton.edu/projects/2010/SUN/>`_.
