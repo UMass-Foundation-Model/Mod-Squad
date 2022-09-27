@@ -144,7 +144,7 @@ class TaskonomyDataset(data.Dataset):
 
         # assert False
         self.length = len(self.data_list[self.img_types[0]])
-        print(len(self.data_list[self.img_types[0]]), self.data_list[self.img_types[0]][self.length-1       ])
+        print(len(self.data_list[self.img_types[0]]), self.data_list[self.img_types[0]][self.length-1])
         self._max, self._min = {}, {}
         for img_type in self.img_types:
             self._max[img_type] = -1000000.0

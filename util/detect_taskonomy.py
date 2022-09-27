@@ -325,7 +325,8 @@ if __name__ == '__main__':
     # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'nonfixated_matches', 'normal', 'point_info', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
     # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
     # img_types = ['rgb', 'class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal']
-    img_types = ['principal_curvature', 'reshading', 'segment_unsup2d', 'segment_unsup25d' ] 
+    # img_types = ['principal_curvature', 'reshading', 'segment_unsup2d', 'segment_unsup25d' ] 
+    img_types = ['edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d']
     # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'rgb']
     # rgb class_object class_scene depth_euclidean depth_zbuffer normal 
     # img_types = ['class_scene', 'class_object', 'rgb', 'normal', 'reshading', 'depth_euclidean', 'segment_unsup2d']

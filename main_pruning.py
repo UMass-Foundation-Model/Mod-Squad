@@ -35,7 +35,7 @@ from ptflops import get_model_complexity_info
 
 
 
-# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_mt.py \
+# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_pruning.py \
 #         --batch_size 20 \
 #         --epochs 100 \
 #         --input_size 224 \
@@ -44,9 +44,12 @@ from ptflops import get_model_complexity_info
 #         --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
 #         --model mtvit_taskgate_mlp16E4_small \
 #         --drop_path 0.1 \
-#         --times 5 \
+#         --times 1 \
 #         --cycle \
-#         --exp-name debug4 \
+#         --copy mtvit_taskgate_mlp16E4_small_go \
+#         --exp-name pruning_debug \
+
+
 
 
 def get_args_parser():
@@ -166,7 +169,7 @@ def get_args_parser():
 
     parser.add_argument('--times', default=1, type=int,
                         help='number of distributed processes')
-    parser.add_argument('--tasks', default=10, type=int,
+    parser.add_argument('--tasks', default=2, type=int,
                         help='number of tasks')
 
     parser.add_argument('--eval_all', action='store_true')
@@ -175,7 +178,7 @@ def get_args_parser():
     parser.add_argument('--dynamic_lr', action='store_true')
 
     parser.add_argument('--visualize', action='store_true')
-    parser.add_argument('--the_task', type=str, default='',
+    parser.add_argument('--the_task', type=str, default='class_object',
                         help='The only one task')
 
     parser.set_defaults(only_gate=False)
@@ -184,19 +187,21 @@ def get_args_parser():
     parser.set_defaults(dynamic_lr=False)
     parser.set_defaults(visualize=False)
 
+    parser.add_argument('--copy', default='',
+                        help='copy from exp for pruning')
+    parser.add_argument('--vis_file', default='',
+                        help='visualize file')
+    parser.add_argument('--thresh', type=float, default=3, 
+                        help='threshold for copying the expert')
+
     return parser
 
 
+
+
+
 def main(args):
-    if args.tasks == 15:
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 14:  # no semantic_seg
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 10:  # no semantic_seg
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 9:  # no semantic_seg
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 2:
+    if args.tasks == 2:
         args.img_types = [args.the_task, 'rgb']
     else:
         assert False
@@ -283,19 +288,29 @@ def main(args):
         global_pool=args.global_pool,
     )
 
-    if args.finetune and not args.eval:
-        checkpoint = torch.load(args.finetune, map_location='cpu')
+    checkpoint_model = model.pruning(args)
+    # load_file = '/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/MTMoe/' + str(args.copy) + '/use.pth'
+    # checkpoint_all = torch.load(load_file, map_location='cpu')
+    # checkpoint_model = checkpoint_all['model']
 
-        print("Load pre-trained checkpoint from: %s" % args.finetune)
-        checkpoint_model = checkpoint['model']
-        state_dict = model.state_dict()
+    interpolate_pos_embed(model, checkpoint_model)
+    msg = model.load_state_dict(checkpoint_model, strict=False)
+    print(msg)
 
-        # interpolate position embedding
-        interpolate_pos_embed(model, checkpoint_model)
+    # if args.copy and not args.eval:
+    #     checkpoint = torch.load(args.copy, map_location='cpu')
 
-        # load pre-trained model
-        msg = model.load_state_dict(checkpoint_model, strict=False)
-        print(msg)
+    #     print("Load pre-trained checkpoint from: %s" % args.copy)
+    #     checkpoint_model = checkpoint['model']
+    #     state_dict = model.state_dict()
+
+
+    #     # interpolate position embedding
+    #     interpolate_pos_embed(model, checkpoint_model)
+
+    #     # load pre-trained model
+    #     msg = model.load_state_dict(checkpoint_model, strict=False)
+    #     print(msg)
 
     model.to(device)
 

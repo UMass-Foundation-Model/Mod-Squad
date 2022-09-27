@@ -4,7 +4,7 @@ import seaborn as sns; #sns.set_theme()
 import matplotlib.pyplot as plt
 import collections
 
-the_list = torch.load('vis.t7')
+the_list = torch.load('mtvit_taskgate_small_att_vis.t7')
 print(the_list)
 
 # Layer, img_type, Expert
@@ -15,10 +15,10 @@ def vis_img_to_expert(data, depth):
     the_data = []
     for _key, expert in data.items():
         task_name.append(_key)
-        the_data.append(expert)
+        the_data.append(expert[0])
     the_data = np.array(the_data)
 
-    ax = sns.heatmap(the_data, cmap='Blues', yticklabels=task_name)
+    ax = sns.heatmap(the_data, annot=True, cmap='Blues', yticklabels=task_name)
     ax.set_title('Layer '+str(depth))
     plt.tight_layout()
     plt.xticks(fontsize=6)
@@ -55,7 +55,7 @@ def vis_all_task_relation(the_list):
         the_data = []
         for _key, expert in all_dict.items():
             task_name.append(_key)
-            the_data.append(expert)
+            the_data.append(expert[0])
         print(task_name)
 
         the_data = np.array(the_data)
