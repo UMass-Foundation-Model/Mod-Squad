@@ -263,6 +263,7 @@ class MoEnhanceBlock(nn.Module):
         else:
             self.mlp = MoE(dim,
                     mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
+                    bias=True,
                     cvloss=cvloss,
                     switchloss=switchloss,
                     zloss=zloss,
@@ -385,6 +386,7 @@ class MoEnhanceTaskBlock(nn.Module):
 
         self.mlp = TaskMoE(dim,
                 mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
+                bias=True,
                 acc_aux_loss=True, 
                 cvloss=cvloss,
                 switchloss=switchloss,

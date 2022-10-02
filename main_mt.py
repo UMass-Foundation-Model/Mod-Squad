@@ -34,7 +34,9 @@ from fvcore.nn import FlopCountAnalysis, flop_count_str
 from ptflops import get_model_complexity_info
 
 
-
+# ssh zitianchen@vonmises.cs.umass.edu
+# ssh -L 4799:dcsfen01:4799 aimos 
+# ssh -L 9566:dcsfen01:9566 aimos
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_mt.py \
 #         --batch_size 20 \
 #         --epochs 100 \
@@ -166,7 +168,7 @@ def get_args_parser():
 
     parser.add_argument('--times', default=1, type=int,
                         help='number of distributed processes')
-    parser.add_argument('--tasks', default=10, type=int,
+    parser.add_argument('--tasks', default=14, type=int,
                         help='number of tasks')
 
     parser.add_argument('--eval_all', action='store_true')
@@ -177,12 +179,13 @@ def get_args_parser():
     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--the_task', type=str, default='',
                         help='The only one task')
+    parser.add_argument('--visualizeimg', action='store_true')
 
     parser.set_defaults(only_gate=False)
     parser.set_defaults(cycle=False)
     parser.set_defaults(eval_all=False)
     parser.set_defaults(dynamic_lr=False)
-    parser.set_defaults(visualize=False)
+    parser.set_defaults(visualizeimg=False)
 
     return parser
 
@@ -196,6 +199,8 @@ def main(args):
         args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
     elif args.tasks == 9:  # no semantic_seg
         args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.tasks == 7:  # no semantic_seg
+        args.img_types = ['class_object', 'depth_euclidean', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'edge_occlusion']
     elif args.tasks == 2:
         args.img_types = [args.the_task, 'rgb']
     else:

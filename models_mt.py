@@ -38,7 +38,7 @@ class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
 
         # create task head
         self.task_heads = []
-        type_to_channel = {'depth_euclidean':1, 'depth_zbuffer':1, 'edge_occlusion':1, 'edge_texture':1, 'keypoints2d':1, 'keypoints3d':1, 'normal':3, 'principal_curvature':3,  'reshading':3, 'rgb':3, 'segment_semantic':18, 'segment_unsup2d':1, 'segment_unsup25d':1}
+        type_to_channel = {'depth_euclidean':1, 'depth_zbuffer':1, 'edge_occlusion':1, 'edge_texture':1, 'keypoints2d':1, 'keypoints3d':1, 'normal':3, 'principal_curvature':2,  'reshading':3, 'rgb':3, 'segment_semantic':18, 'segment_unsup2d':1, 'segment_unsup25d':1}
         image_height, image_width = self.patch_embed.img_size
         patch_height, patch_width = self.patch_embed.patch_size
         assert image_height == 224 and image_width == 224
@@ -154,8 +154,6 @@ class MTVisionTransformerMoEAll(MTVisionTransformer):
             for i in range(depth)])
 
         self.apply(self._init_weights)
-        # self.gate_num = torch.zeros(48).float()
-        # self.gate_num.requires_grad=False
 
         # for blk in self.blocks:
         #     if moe_type != 'random' and moe_type!='FLOP':
@@ -315,13 +313,14 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
         self.blocks = nn.Sequential(*the_blocks)
 
         # Careful Here!!!
-        origin_task = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'segment_unsup2d', 'segment_unsup25d']
+        # origin_task = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'segment_unsup2d', 'segment_unsup25d']
+        origin_task = args.ori_img_types
         task_bh = -1
         for i, the_task in enumerate(origin_task):
             if the_task == args.the_task:
                 task_bh = i 
                 break
-        assert task_bh >= 0
+        # assert task_bh >= 0
 
         checkpoint_all = torch.load(load_file, map_location='cpu')
         checkpoint = checkpoint_all['model']
@@ -341,10 +340,11 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
 
             prefix = 'blocks.' + str(depth) + '.attn.q_proj.'
 
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.weight', prefix+'f_gate.'+'0'+'.0.weight')
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.bias', prefix+'f_gate.'+'0'+'.0.bias')
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.weight', prefix+'f_gate.'+'0'+'.2.weight')
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.bias', prefix+'f_gate.'+'0'+'.2.bias')
+            if task_bh != -1:
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.weight', prefix+'f_gate.'+'0'+'.0.weight')
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.bias', prefix+'f_gate.'+'0'+'.0.bias')
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.weight', prefix+'f_gate.'+'0'+'.2.weight')
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.bias', prefix+'f_gate.'+'0'+'.2.bias')
 
             # TaskMoe experts.w experts.b output_experts.w output_experts.b f_gate.task_bh.0 
             if pruning_attn:
@@ -370,10 +370,11 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
                             checkpoint[tgt_key] = torch.index_select(checkpoint[the_key], 0, select_id)
 
             prefix = 'blocks.' + str(depth) + '.mlp.'
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.weight', prefix+'f_gate.'+'0'+'.0.weight')
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.bias', prefix+'f_gate.'+'0'+'.0.bias')
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.weight', prefix+'f_gate.'+'0'+'.2.weight')
-            move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.bias', prefix+'f_gate.'+'0'+'.2.bias')
+            if task_bh != -1:
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.weight', prefix+'f_gate.'+'0'+'.0.weight')
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.0.bias', prefix+'f_gate.'+'0'+'.0.bias')
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.weight', prefix+'f_gate.'+'0'+'.2.weight')
+                move_dict(checkpoint, prefix+'f_gate.'+str(task_bh)+'.2.bias', prefix+'f_gate.'+'0'+'.2.bias')
             if pruning_mlp:
                 select_id = (torch.from_numpy(np.array(expert_usage[mlp_bh])) > args.thresh).nonzero().view(-1)
                 for words in ['experts.w', 'experts.b', 'output_experts.w', 'output_experts.b', 'f_gate.'+'0'+'.2.weight', 'f_gate.'+'0'+'.2.bias']:
@@ -387,11 +388,11 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
                         elif '.weight' in the_key:
                             tgt_key = prefix+'f_gate.'+'0'+'.2.weight'
 
-                            checkpoint[prefix+'f_gate.'+'0'+'.0.weight'] = checkpoint[prefix+'f_gate.'+str(task_bh)+'.0.weight']
+                            # checkpoint[prefix+'f_gate.'+'0'+'.0.weight'] = checkpoint[prefix+'f_gate.'+str(task_bh)+'.0.weight']
                         elif '.bias' in the_key:
                             tgt_key = prefix+'f_gate.'+'0'+'.2.bias'
 
-                            checkpoint[prefix+'f_gate.'+'0'+'.0.bias'] = checkpoint[prefix+'f_gate.'+str(task_bh)+'.0.bias']
+                            # checkpoint[prefix+'f_gate.'+'0'+'.0.bias'] = checkpoint[prefix+'f_gate.'+str(task_bh)+'.0.bias']
 
                         if blk.mlp.noisy_gating and 'f_gate' in words:
                             the_id = select_id + checkpoint[the_key].shape[0] // 2
@@ -417,9 +418,44 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
             del checkpoint[c_key]
         checkpoint.update(new_dict)
 
-        checkpoint['task_embedding'] = checkpoint['task_embedding'][:,task_bh:task_bh+1]
+        if task_bh != -1:
+            checkpoint['task_embedding'] = checkpoint['task_embedding'][:,task_bh:task_bh+1]
+        else:
+            del checkpoint['task_embedding']
 
         return checkpoint
+
+    def delete_ckpt(self, args): # the_task is not in origin task
+        if os.getcwd()[:26] == '/gpfs/u/barn/AICD/AICDzich' or os.getcwd()[:26] == '/gpfs/u/home/AICD/AICDzich':
+            load_file = '/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/MTMoe/' + str(args.copy) + '/use.pth'
+        else:
+            load_file = '/gpfs/u/home/LMCG/LMCGzich/scratch/work_dirs/MTMoe/' + str(args.copy) + '/use.pth'
+
+        checkpoint_all = torch.load(load_file, map_location='cpu')
+        checkpoint = checkpoint_all['model']
+
+        delete_key = []
+        for c_key in checkpoint.keys():
+            if ('f_gate.' in c_key) or ('task_heads' in c_key):
+                # print('delete ', c_key)
+                delete_key.append(c_key)
+        for c_key in delete_key:
+            del checkpoint[c_key]
+
+        del checkpoint['task_embedding']
+        return checkpoint
+
+    def frozen(self):
+        self.patch_embed.requires_grad = False
+        self.pos_embed.requires_grad = False
+        self.cls_token.requires_grad = False
+        for blk in self.blocks:
+            blk.attn.kv_proj.requires_grad = False
+            blk.attn.q_proj.experts.requires_grad = False
+            blk.attn.q_proj.output_experts.requires_grad = False
+
+            blk.mlp.experts.requires_grad = False
+            blk.mlp.output_experts.requires_grad = False
 
     def moa_init_weight(self, module):
         if isinstance(module, (nn.Linear)):
@@ -521,6 +557,57 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
 
         # self.all_clear()
         return output, z_loss + self.get_zloss()
+
+
+class MTVisionTransformerM3ViT(MTVisionTransformerMoETaskGating):
+    def __init__(self, img_types,
+                 **kwargs):
+        super(MTVisionTransformerM3ViT, self).__init__(img_types,**kwargs)
+
+    def forward_features(self, x):
+        B = x.shape[0]
+        x = self.patch_embed(x)
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = x + self.pos_embed
+
+        # x = x + self.task_embedding[:,task_rank:task_rank+1, :]
+        x_before = self.pos_drop(x)
+
+        # apply Transformer blocks
+
+        output = {}
+        z_loss = 0
+        for t, the_type in enumerate(self.img_types):
+            x = x_before
+            for blk in self.blocks:
+                x = x + self.task_embedding[:, t:t+1, :]
+                x, _ = blk(x, t)
+
+            if 'class' in the_type:
+                x = x[:, 1:, :].mean(dim=1)
+                x = self.fc_norm(x)
+            else:
+                x = self.norm(x)
+                x = x[:, 1:, :]
+            output[the_type] = x
+            z_loss = z_loss + self.get_topkloss()
+            z_loss = z_loss + self.get_zloss()
+        
+        return output, z_loss
+
+    def forward(self, x, task, get_flop=False, get_z_loss=False):
+
+        output, z_loss = self.forward_features(x)
+        for t, the_type in enumerate(self.img_types):
+            output[the_type] = self.task_heads[t](output[the_type])
+
+        if get_flop:
+            return output['class_object']
+
+        return output, z_loss
+
 
 def mtvit_tiny(img_types, **kwargs): # 6.43M 
     model = MTVisionTransformer(img_types,
@@ -629,6 +716,22 @@ def mtvit_mlp16E4_small(img_types, **kwargs): #
 
 def mtvit_taskgate_mlp16E4_small(img_types, **kwargs): # 67.37M 5.21G
     model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+        num_attn_experts=6, head_dim=384//6 * 2,
+        num_ffd_experts=16, ffd_heads=4, ffd_noise=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_768_12E3_8E2_small(img_types, **kwargs): # 5.17Gs bsz18
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=3, qkv_bias=True,
+        num_attn_experts=12, head_dim=768//12 * 2,
+        num_ffd_experts=8, ffd_heads=2, ffd_noise=True, mlp_ratio=1,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def m3vit_taskgate_mlp16E4_small(img_types, **kwargs): # 67.37M 5.21G
+    model = MTVisionTransformerM3ViT(img_types, 
         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         num_attn_experts=6, head_dim=384//6 * 2,
         num_ffd_experts=16, ffd_heads=4, ffd_noise=True,

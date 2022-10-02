@@ -1,4 +1,4 @@
---P_PER_NODE=$2
+P_PER_NODE=$2
 # # this should be same as ntasks-per-node/gpu_num
 
 # ### init virtual environment if needed

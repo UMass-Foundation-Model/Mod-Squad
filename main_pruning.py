@@ -172,6 +172,9 @@ def get_args_parser():
     parser.add_argument('--tasks', default=2, type=int,
                         help='number of tasks')
 
+    parser.add_argument('--ori_tasks', default=14, type=int,
+                        help='number of original tasks')
+
     parser.add_argument('--eval_all', action='store_true')
     parser.add_argument('--cycle', action='store_true')
     parser.add_argument('--only_gate', action='store_true')
@@ -186,6 +189,10 @@ def get_args_parser():
     parser.set_defaults(eval_all=False)
     parser.set_defaults(dynamic_lr=False)
     parser.set_defaults(visualize=False)
+
+    parser.add_argument('--visualizeimg', action='store_true')
+    parser.set_defaults(visualizeimg=False)
+
 
     parser.add_argument('--copy', default='',
                         help='copy from exp for pruning')
@@ -203,6 +210,21 @@ def get_args_parser():
 def main(args):
     if args.tasks == 2:
         args.img_types = [args.the_task, 'rgb']
+    else:
+        assert False
+
+    if args.ori_tasks == 15:
+        args.ori_img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.ori_tasks == 14:  # no semantic_seg
+        args.ori_img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.ori_tasks == 10:  # no semantic_seg
+        args.ori_img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.ori_tasks == 9:  # no semantic_seg
+        args.ori_img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
+    elif args.ori_tasks == 7:  # no semantic_seg
+        args.ori_img_types = ['class_object', 'depth_euclidean', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'edge_occlusion']
+    elif args.ori_tasks == 2:
+        args.ori_img_types = [args.the_task, 'rgb']
     else:
         assert False
 
@@ -331,15 +353,6 @@ def main(args):
             t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
             flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
             print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
-
-        # def prepare_input(resolution):
-        #     x1 = torch.FloatTensor(6, *resolution).to(device)
-        #     return dict(x=x1, task=t_mg_types[0], get_flop=True)
-
-        # macs, params = get_model_complexity_info(model, (3, 224, 224), input_constructor=prepare_input, as_strings=True,
-        #                                        print_per_layer_stat=True)
-        # print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-        # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
 
         print('number of params (M): %.2f' % (n_parameters / 1.e6))

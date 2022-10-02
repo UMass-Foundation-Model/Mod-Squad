@@ -21,6 +21,7 @@ from timm.utils import accuracy
 import util.misc as misc
 import util.lr_sched as lr_sched
 import torch.nn.functional as F
+from util.metric import *
 
 def get_loss(outputs, targets, task):
     if 'class' in task:
@@ -28,29 +29,44 @@ def get_loss(outputs, targets, task):
     elif 'segment_semantic' in task:
         task_loss = criterion(outputs, targets)
     elif 'normal' in task:
-        targets = targets.permute(0,2,3,1)
-        task_loss = (1 - (outputs*targets).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(targets, p=2, dim=-1)).mean()
+        T = targets.permute(0,2,3,1)
+        task_loss = (1 - (outputs*T).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(T, p=2, dim=-1)).mean()
     elif 'depth' in task or 'keypoint' in task or 'reshading' in task or 'edge' in task or 'segment' in task:
         if outputs.shape[-1] == 1:
-            outputs = outputs.view(outputs.shape[:-1])
+            Out = outputs.view(outputs.shape[:-1])
         elif outputs.shape[-1] == 3:
-            outputs = outputs.permute(0,3,1,2)
-        task_loss = F.l1_loss(outputs, targets)
+            Out = outputs.permute(0,3,1,2)
+        task_loss = F.l1_loss(Out, targets)
     else: # L2 curvature
         if outputs.shape[-1] == 1:
-            outputs = outputs.view(outputs.shape[:-1])
+            Out = outputs.view(outputs.shape[:-1])
         elif outputs.shape[-1] > 1:
-            outputs = outputs.permute(0,3,1,2)
-        task_loss = F.mse_loss(outputs, targets)
+            Out = outputs.permute(0,3,1,2)
+        task_loss = F.mse_loss(Out, targets)
     return task_loss
 
 def get_metric(outputs, targets, task):
     # get the metric
     if 'class' in task:
         # correct_prediction = tf.equal(tf.argmax(final_output,1), tf.argmax(target, 1))
-        metric = (outputs.argmax(dim=-1) == target.argmax(dim==-1)).sum()
-    
-    
+        metric = (outputs.argmax(dim=-1) == targets.argmax(dim=-1)).float().mean().item()
+    elif 'depth' in task:
+        if outputs.shape[-1] == 1:
+            outputs = outputs.view(outputs.shape[:-1]) # B, H, W
+        metric = compute_depth_errors(outputs, targets).item()
+    elif 'curvature' in task:
+        if outputs.shape[-1] == 1:
+            outputs = outputs.view(outputs.shape[:-1])
+        elif outputs.shape[-1] > 1:
+            outputs = outputs.permute(0,3,1,2)
+        metric = F.mse_loss(outputs, targets).item()
+    else:
+        if outputs.shape[-1] == 1:
+            outputs = outputs.view(outputs.shape[:-1])
+        elif outputs.shape[-1] == 3:
+            outputs = outputs.permute(0,3,1,2)
+        metric = F.l1_loss(outputs, targets).item()
+    return metric
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -88,30 +104,43 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         the_loss = {}
         loss_list = []
         tot_loss = 0
+        the_metric = {}
 
         if args.visualize and misc.is_main_process():
             if data_iter_step > 0 and data_iter_step%20 == 0:
                 model.module.visualize(vis_head=True, vis_mlp=False, model_name=args.exp_name)
 
         # with torch.autograd.set_detect_anomaly(True):
+        # print('data[depth_eculidean]: ', data['depth_euclidean'].median(), data['depth_euclidean'].mean(), data['depth_euclidean'].min(), data['depth_euclidean'].max())
+        # depth_single_image(data['depth_euclidean'][0:1], '/gpfs/u/home/AICD/AICDzich/scratch/' + args.exp_name + '.png')
+
+        # print('data[depth_zbuffer]: ', data['depth_zbuffer'].mean(), data['depth_zbuffer'].min(), data['depth_zbuffer'].max())
+        
+        
         with torch.cuda.amp.autocast():
+            predict = {}
             if model.module.taskGating:
                 outputs, aux_loss = model(samples, None)
                 z_loss = z_loss + aux_loss
                 for task in args.img_types:
                     if 'rgb' in task:
                         continue
+                    predict[task] = outputs[task].detach().cpu()
                     targets = data[task].to(device, non_blocking=True)
                     task_loss = get_loss(outputs[task], targets, task)
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
+                    task_metric = get_metric(outputs[task], targets, task)
+                    the_metric[task] = task_metric
             else:
+                
                 for task in args.img_types:
                     if 'rgb' in task:
                         continue
                     outputs, aux_loss = model(samples, task)
                     z_loss = z_loss + aux_loss
+                    predict[task] = outputs.detach().cpu()
 
                     targets = data[task].to(device, non_blocking=True)
                     task_loss = get_loss(outputs, targets, task)
@@ -126,7 +155,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
+                    task_metric = get_metric(outputs, targets, task)
+                    the_metric[task] = task_metric
 
+            if args.visualizeimg:
+                image_visualize(args, data, predict)
         
 
         loss = AWL(loss_list)
@@ -167,6 +200,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         for _key, value in the_loss_value.items():
             metric_logger.meters[_key].update(value)
 
+        for _key, value in the_metric.items():
+            metric_logger.meters['met_'+_key].update(value)
+
         min_lr = 10.
         max_lr = 0.
         for group in optimizer.param_groups:
@@ -186,6 +222,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         for _key, value in the_loss_value.items():
             the_loss_value_reduce[_key] = misc.all_reduce_mean(value)
 
+        the_metric_reduce = {}
+        for _key, value in the_metric.items():
+            the_metric_reduce[_key] = misc.all_reduce_mean(value)
+
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
             """ We use epoch_1000x as the x-axis in tensorboard.
             This calibrates different curves when batch size changes.
@@ -198,6 +238,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             log_writer.add_scalar('lr', max_lr, epoch_1000x)
             for _key, value in the_loss_value_reduce.items():
                 log_writer.add_scalar('multitask/' + _key, value, epoch_1000x)
+
+            for _key, value in the_metric_reduce.items():
+                log_writer.add_scalar('multitask_metric/' + _key, value, epoch_1000x)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -222,17 +265,11 @@ def evaluate(data_loader, model, device, AWL, args):
 
     for data in metric_logger.log_every(data_loader, 10, header):
         samples = data['rgb']
-        # target = batch[-1]
         samples = samples.to(device, non_blocking=True)
-        # target = target.to(device, non_blocking=True)
-
-        # # compute output
-        # with torch.cuda.amp.autocast():
-        #     output, _ = model(images)
-        #     loss = criterion(output, target)
 
         the_loss = {}
         loss_list = []
+        the_metric = {}
         tot_loss = 0
         with torch.cuda.amp.autocast():
             if model.module.taskGating:
@@ -246,6 +283,8 @@ def evaluate(data_loader, model, device, AWL, args):
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
+                    task_metric = get_metric(outputs[task], targets, task)
+                    the_metric[task] = task_metric
             else:
                 for task in args.img_types:
                     if 'rgb' in task:
@@ -256,6 +295,8 @@ def evaluate(data_loader, model, device, AWL, args):
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
+                    task_metric = get_metric(outputs, targets, task)
+                    the_metric[task] = task_metric
 
         loss = AWL(loss_list)
         # acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -268,6 +309,11 @@ def evaluate(data_loader, model, device, AWL, args):
 
         for _key, value in the_loss.items():
             metric_logger.meters[_key].update(value.item(), n=batch_size)
+
+        for _key, value in the_metric.items():
+            metric_logger.meters['met_'+_key].update(value, n=batch_size)
+
+        break
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
