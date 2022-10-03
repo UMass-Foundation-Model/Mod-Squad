@@ -216,6 +216,7 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
                  num_ffd_experts=16, ffd_heads=2, ffd_noise=True,
                  moe_type='normal',
                  switchloss=0.01 * 1, zloss=0.001 * 1, w_topk_loss= 0.0, limit_k=0, 
+                 w_MI = 0.,
                  post_layer_norm=False,
                  **kwargs):
         super(MTVisionTransformerMoETaskGating, self).__init__(img_types,
@@ -247,7 +248,8 @@ class MTVisionTransformerMoETaskGating(MTVisionTransformer):
                 num_ffd_experts=num_ffd_experts, ffd_heads=ffd_heads, ffd_noise=ffd_noise,
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
-                moe_type=moe_type,switchloss=switchloss, zloss=zloss, w_topk_loss=w_topk_loss, limit_k=limit_k,
+                moe_type=moe_type,switchloss=switchloss, zloss=zloss, w_topk_loss=w_topk_loss, limit_k=limit_k, 
+                w_MI = w_MI,
                 att_w_topk_loss=att_w_topk_loss, att_limit_k=att_limit_k, 
                 post_layer_norm=post_layer_norm,
                 )
@@ -826,6 +828,24 @@ def mtvit_taskgate_small_att(img_types, **kwargs): # 68.46M
         patch_size=16, embed_dim=384, depth=12, num_heads=6, qkv_bias=True,
         num_attn_experts=6 + 9, head_dim=384//6 * 2,
         num_ffd_experts=1, ffd_heads=1, ffd_noise=False, mlp_ratio=4,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_small_att_MI(img_types, **kwargs): # 68.46M
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, qkv_bias=True,
+        num_attn_experts=6 + 9, head_dim=384//6 * 2,
+        num_ffd_experts=1, ffd_heads=1, ffd_noise=False, mlp_ratio=4,
+        w_MI=0.1, switchloss=0.0, zloss=0.0,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+def mtvit_taskgate_small_att_MI_2(img_types, **kwargs): # 68.46M
+    model = MTVisionTransformerMoETaskGating(img_types, 
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, qkv_bias=True,
+        num_attn_experts=6 + 9, head_dim=384//6 * 2,
+        num_ffd_experts=1, ffd_heads=1, ffd_noise=False, mlp_ratio=4,
+        w_MI=0.01, switchloss=0.0, zloss=0.0,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
