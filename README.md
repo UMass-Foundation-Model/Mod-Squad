@@ -1,6 +1,6 @@
 ## Mod-Squad: Designing Mixtures of Experts As Modular Multi-Task Learners
 
-![Alt Text](https://vis-www.cs.umass.edu/mod-squad/materials/annimation.mp4)
+![Alt Text](https://vis-www.cs.umass.edu/mod-squad/materials/pipeline.png)
 
 
 
