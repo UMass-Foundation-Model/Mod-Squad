@@ -28,7 +28,9 @@ An example of the download from tiny subset
 omnitools.download class_object class_scene depth_euclidean depth_zbuffer edge_occlusion edge_texture keypoints2d keypoints3d nonfixated_matches normal points principal_curvature reshading rgb segment_semantic segment_unsup2d segment_unsup25d --components taskonomy --subset tiny --dest ./taskonomy_tiny/   --connections_total 40 --agree --name [your name] --email [your email]
 ```
 
+Please put the data in ./data
 
+Default model will save to ./work_dir, logs will be save to ./log_dir
 
 Environment: timm==0.3.2 pytorch==1.10.2
 
