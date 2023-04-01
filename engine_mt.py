@@ -1,14 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# --------------------------------------------------------
-
 import math
 import sys
 from typing import Iterable, Optional
@@ -30,7 +19,7 @@ def get_loss(outputs, targets, task):
         task_loss = criterion(outputs, targets)
     elif 'normal' in task:
         T = targets.permute(0,2,3,1)
-        task_loss = (1 - (outputs*T).sum(-1) / torch.norm(outputs, p=2, dim=-1) / torch.norm(T, p=2, dim=-1)).mean()
+        task_loss = (1 - (outputs*T).sum(-1) / (torch.norm(outputs, p=2, dim=-1) + 0.000001) / (torch.norm(T, p=2, dim=-1)+ 0.000001) ).mean()
     elif 'depth' in task or 'keypoint' in task or 'reshading' in task or 'edge' in task or 'segment' in task:
         if outputs.shape[-1] == 1:
             Out = outputs.view(outputs.shape[:-1])
@@ -53,7 +42,10 @@ def get_metric(outputs, targets, task):
     elif 'depth' in task:
         if outputs.shape[-1] == 1:
             outputs = outputs.view(outputs.shape[:-1]) # B, H, W
-        metric = compute_depth_errors(outputs, targets).item()
+        if task == 'depth_euclidean':
+            metric = compute_depth_errors(outputs, targets).item()
+        else:
+            metric = 0.0
     elif 'curvature' in task:
         if outputs.shape[-1] == 1:
             outputs = outputs.view(outputs.shape[:-1])
@@ -110,13 +102,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             if data_iter_step > 0 and data_iter_step%20 == 0:
                 model.module.visualize(vis_head=True, vis_mlp=False, model_name=args.exp_name)
 
-        # with torch.autograd.set_detect_anomaly(True):
-        # print('data[depth_eculidean]: ', data['depth_euclidean'].median(), data['depth_euclidean'].mean(), data['depth_euclidean'].min(), data['depth_euclidean'].max())
-        # depth_single_image(data['depth_euclidean'][0:1], '/gpfs/u/home/AICD/AICDzich/scratch/' + args.exp_name + '.png')
-
-        # print('data[depth_zbuffer]: ', data['depth_zbuffer'].mean(), data['depth_zbuffer'].min(), data['depth_zbuffer'].max())
-        
-        
         with torch.cuda.amp.autocast():
             predict = {}
             if model.module.taskGating:
@@ -128,6 +113,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     predict[task] = outputs[task].detach().cpu()
                     targets = data[task].to(device, non_blocking=True)
                     task_loss = get_loss(outputs[task], targets, task)
+
+                    if not math.isfinite(task_loss.item()):
+                        print("Loss is {}, stopping training".format(task_loss.item()))
+                        sys.exit(1)
+
+                    task_loss = torch.clamp(task_loss, min=-1000, max=1000)
                     tot_loss = tot_loss + task_loss.item()
                     the_loss[task] = task_loss
                     loss_list.append(the_loss[task])
@@ -148,7 +139,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     task_loss = torch.clamp(task_loss, min=-1000, max=1000)
                     task_loss_value = task_loss.item()
                     if not math.isfinite(task_loss_value):
-                        print("Loss is {}, stopping training".format(task_loss_value))
+                        print("Task is {} Loss is {}, stopping training".format(task, task_loss_value))
                         task_loss = torch.clamp(task_loss, min=-1000, max=1000)
                         sys.exit(1)
 
@@ -165,8 +156,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss = AWL(loss_list)
         loss_value = loss.item()
 
+        if args.tasks > 2:
+            if torch.is_tensor(z_loss):
+                if not math.isfinite(z_loss.item()): #
+                    print("ZLoss is {}, stopping training".format(z_loss.item()))
+                    # z_loss =s
+                    sys.exit(1)
+            loss = loss + z_loss
+        else:
+            z_loss = z_loss * 0.00001
 
-        loss = loss + z_loss
         if torch.is_tensor(z_loss):
             z_loss_value = z_loss.item()
         else:
@@ -176,11 +175,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         for _key, value in the_loss.items():
             the_loss_value[_key] = value.item()
 
-        loss = torch.clamp(loss, min=-1000, max=1000)
+        
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
             loss = torch.clamp(loss, min=-1000, max=1000)
             sys.exit(1)
+        loss = torch.clamp(loss, min=-1000, max=1000)
         
         loss /= accum_iter
         loss_scaler(loss, optimizer, clip_grad=max_norm,
@@ -312,8 +312,6 @@ def evaluate(data_loader, model, device, AWL, args):
 
         for _key, value in the_metric.items():
             metric_logger.meters['met_'+_key].update(value, n=batch_size)
-
-        break
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

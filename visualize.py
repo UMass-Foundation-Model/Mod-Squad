@@ -1,14 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# --------------------------------------------------------
-
 import argparse
 import datetime
 import json
@@ -167,12 +156,9 @@ def get_args_parser():
 
     parser.add_argument("--exp-name", type=str, required=True, help="Name for experiment run (used for logging)")
 
-
     return parser
 
-
 def main(args):
-
     # make dir
     args.output_dir = os.path.join(args.output_dir, str(args.exp_name))
     args.log_dir = os.path.join(args.log_dir, str(args.exp_name))

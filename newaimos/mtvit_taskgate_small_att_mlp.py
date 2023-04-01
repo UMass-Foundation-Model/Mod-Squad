@@ -4,9 +4,9 @@ from datetime import datetime
 import shutil
 
 def run_main():
-    ngpus = 4    
-    nodes = 16
-    exp_name = 'fixnew_mtvit_taskgate_small_att_mlp'
+    ngpus = 6   
+    nodes = 12
+    exp_name = 'mtvit_taskgate_small_att_mlp_MI_g'
     world_size = ngpus * nodes
     # datetime object containing current date and time
     now = datetime.now()

@@ -1,4 +1,3 @@
-
 import argparse
 import datetime
 import json
@@ -22,6 +21,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 import util.lr_decay as lrd
 import util.misc as misc
 from util.datasets import build_taskonomy
+from util.dataset_taskonomy import TaskonomyDataset
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -33,23 +33,16 @@ from util.AutomaticWeightedLoss import AutomaticWeightedLoss
 from fvcore.nn import FlopCountAnalysis, flop_count_str
 from ptflops import get_model_complexity_info
 
-
-# ssh zitianchen@vonmises.cs.umass.edu
-# ssh -L 4799:dcsfen01:4799 aimos 
-# ssh -L 9566:dcsfen01:9566 aimos
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_mt.py \
-#         --batch_size 20 \
+#         --batch_size 6 \
 #         --epochs 100 \
 #         --input_size 224 \
-#         --blr 5e-4 --weight_decay 0.05 \
+#         --blr 4e-4 --weight_decay 0.05 \
 #         --warmup_epochs 10 \
-#         --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
-#         --model mtvit_taskgate_mlp16E4_small \
+#         --model mtvit_taskgate_att_mlp_base_MI_twice \
 #         --drop_path 0.1 \
-#         --times 5 \
-#         --cycle \
-#         --exp-name debug4 \
-
+#         --scaleup \
+#         --exp-name scaleup_mtvit_taskgate_att_mlp_base_MI_twice \
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -129,14 +122,12 @@ def get_args_parser():
                         help='Use class token instead of global pool for classification')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/gpfs/u/home/AICD/AICDzich/scratch/vl_eval_data/ILSVRC2012', type=str,
-                        help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
 
-    parser.add_argument('--output_dir', default='/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/MTMoe',
+    parser.add_argument('--output_dir', default='./work_dirs',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/logs_MTMoe',
+    parser.add_argument('--log_dir', default='./logs_dirs',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -150,7 +141,7 @@ def get_args_parser():
                         help='Perform evaluation only')
     parser.add_argument('--dist_eval', action='store_true', default=False,
                         help='Enabling distributed evaluation (recommended during training for faster monitor')
-    parser.add_argument('--num_workers', default=10, type=int)
+    parser.add_argument('--num_workers', default=6, type=int)
     parser.add_argument('--pin_mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
@@ -181,6 +172,9 @@ def get_args_parser():
                         help='The only one task')
     parser.add_argument('--visualizeimg', action='store_true')
 
+    parser.add_argument('--scaleup', action='store_true')
+    parser.set_defaults(scaleup=False)
+
     parser.set_defaults(only_gate=False)
     parser.set_defaults(cycle=False)
     parser.set_defaults(eval_all=False)
@@ -189,20 +183,10 @@ def get_args_parser():
 
     return parser
 
-
 def main(args):
-    if args.tasks == 15:
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 14:  # no semantic_seg
+
+    if args.tasks == 14:  # no semantic_seg
         args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 10:  # no semantic_seg
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 9:  # no semantic_seg
-        args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    elif args.tasks == 7:  # no semantic_seg
-        args.img_types = ['class_object', 'depth_euclidean', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'edge_occlusion']
-    elif args.tasks == 2:
-        args.img_types = [args.the_task, 'rgb']
     else:
         assert False
 
@@ -233,8 +217,13 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_taskonomy(is_train=True, args=args)
-    dataset_val = build_taskonomy(is_train=False, args=args)
+    if args.scaleup: # use the whole taskonomy
+        print('Caution:: You are scaling up!!')
+        dataset_train = TaskonomyDataset(args.img_types, split='fullplus', partition='train', resize_scale=256, crop_size=224, fliplr=True)
+        dataset_val = TaskonomyDataset(args.img_types, split='fullplus', partition='test', resize_scale=256, crop_size=224)
+    else: # use the medium set of taskonomy
+        dataset_train = TaskonomyDataset(args.img_types, partition='train', resize_scale=256, crop_size=224, fliplr=True)
+        dataset_val = TaskonomyDataset(args.img_types, partition='test', resize_scale=256, crop_size=224)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -268,7 +257,7 @@ def main(args):
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
+        pin_memory=False,
         drop_last=True,
     )
 
@@ -276,11 +265,10 @@ def main(args):
         dataset_val, sampler=sampler_val,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
+        pin_memory=False,
         drop_last=True
     )
 
-    
     model = models_mt.__dict__[args.model](
         args.img_types,
         num_classes=args.nb_classes,
@@ -306,7 +294,6 @@ def main(args):
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     
@@ -319,18 +306,8 @@ def main(args):
         
         if model_without_ddp.moe_type == 'FLOP' or model_without_ddp.ismoe == False:
             t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
-            flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
+            flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), 'normal', True))
             print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
-
-        # def prepare_input(resolution):
-        #     x1 = torch.FloatTensor(6, *resolution).to(device)
-        #     return dict(x=x1, task=t_mg_types[0], get_flop=True)
-
-        # macs, params = get_model_complexity_info(model, (3, 224, 224), input_constructor=prepare_input, as_strings=True,
-        #                                        print_per_layer_stat=True)
-        # print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-        # print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-
 
         print('number of params (M): %.2f' % (n_parameters / 1.e6))
         print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
@@ -345,7 +322,7 @@ def main(args):
     args.distributed = True
     if args.distributed:
         if args.tasks == 2:
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)  
         else:
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
@@ -359,14 +336,14 @@ def main(args):
         layer_decay=args.layer_decay,
         AWL=AWL
     )
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, eps=1e-4)
     loss_scaler = NativeScaler()
 
     criterion = torch.nn.CrossEntropyLoss()
 
     print("criterion = %s" % str(criterion))
 
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, AWL=AWL)
 
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
@@ -381,18 +358,19 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs * args.times):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, None,
-            AWL=AWL,
-            log_writer=log_writer,
-            args=args
-        )
-        if args.output_dir:
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
+        if not args.eval_all:
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler,
+                args.clip_grad, None,
+                AWL=AWL,
+                log_writer=log_writer,
+                args=args
+            )
+            if args.output_dir:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch, AWL=AWL)
 
         test_stats = evaluate(data_loader_val, model, device, AWL, args)
 
@@ -415,18 +393,9 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
-
-    if os.getcwd()[:26] == '/gpfs/u/barn/AICD/AICDzich' or os.getcwd()[:26] == '/gpfs/u/home/AICD/AICDzich':
-        pass
-    else:
-        args.output_dir = '/gpfs/u/home/LMCG/LMCGzich/scratch/work_dirs/MTMoe'
-        args.log_dir = '/gpfs/u/home/LMCG/LMCGzich/scratch/work_dirs/logs_MTMoe'
-    # args.output_dir = '/data/zitianchen/work_dirs/MTMoe'
-    # args.log_dir = '/data/zitianchen/work_dirs/logs_MTMoe'
 
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)

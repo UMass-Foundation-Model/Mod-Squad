@@ -41,12 +41,13 @@ python -m torch.distributed.launch \
         --epochs 50 \
         --input_size 224 \
         --blr 6e-4 --weight_decay 0.05 \
-        --warmup_epochs 1 \
+        --warmup_epochs 4 \
         --times 1 \
         --cycle \
         --model mtvit_taskgate_small_att_mlp \
         --the_task class_scene \
         --copy fixnew_mtvit_taskgate_small_att_mlp_7 \
+        --perc 0.99 \
         --drop_path 0.1 \
         --exp-name ${EXP} \
 

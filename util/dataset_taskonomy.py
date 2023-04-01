@@ -50,13 +50,6 @@ current_scale['edge_texture'] = [0.0, 0.08 * (2**16)]
 
 current_scale['edge_occlusion'] = [0.0, 0.00625* (2**16)]
 
-# cfg['target_preprocessing_fn'] = load_ops.resize_rescale_image_gaussian_blur
-# cfg['target_preprocessing_fn_kwargs'] = {
-#     'new_dims': cfg['target_dim'],
-#     'new_scale': [-1, 1],
-#     'current_scale' : [0.0, 0.00625],
-#     'no_clip' : True
-# }
 no_clip['edge_occlusion'] = True
 
 # segment_unsup2d
@@ -127,23 +120,18 @@ def rescale_image_gaussian_blur(img, new_scale=[-1.,1.], interp_order=1, blur_st
 
 class TaskonomyDataset(data.Dataset):
     
-    def __init__(self, img_types, data_dir='/gpfs/u/home/AICD/AICDzich/scratch/vl_data/taskonomy_medium', 
-        partition='train', transform=None, resize_scale=None, crop_size=None, fliplr=False):
-
-        if os.getcwd()[:26] == '/gpfs/u/barn/AICD/AICDzich' or os.getcwd()[:26] == '/gpfs/u/home/AICD/AICDzich':
-            pass
-        else:
-            data_dir='/gpfs/u/home/LMCG/LMCGzich/scratch/taskonomy_medium'
-
+    def __init__(self, img_types, data_dir='./data', 
+        split='medium', partition='train', transform=None, resize_scale=None, crop_size=None, fliplr=False):
+        
         super(TaskonomyDataset, self).__init__()
-        print('data_dir: ', data_dir)
-
+        
+        self.partition = partition
         self.resize_scale = resize_scale
         self.crop_size = crop_size
         self.fliplr = fliplr
         self.class_num = {'class_object': 1000, 'class_scene': 365, 'segment_semantic':18}
 
-        def loadSplit(splitFile):
+        def loadSplit(splitFile, full=False):
             dictLabels = {}
             with open(splitFile) as csvfile:
                 csvreader = csv.reader(csvfile, delimiter=',')
@@ -157,9 +145,11 @@ class TaskonomyDataset(data.Dataset):
                     no_list = {'brinnon', 'cauthron', 'cochranton', 'donaldson', 'german',
                         'castor', 'tokeland', 'andover', 'rogue', 'athens', 'broseley', 'tilghmanton', 'winooski', 'rosser', 'arkansaw', 'bonnie', 'willow', 'timberon', 'bohemia', 'micanopy', 'thrall', 'annona', 'byers', 'anaheim', 'duarte', 'wyldwood'
                     }
-                    new_list = {'ballou', 'tansboro', 'cutlerville', 'macarthur', 'rough', 'darnestown', 'maryhill', 'bowlus', 'tomkins', 'herricks', 'mosquito', 'brinnon'}
+                    new_list = {'ballou', 'tansboro', 'cutlerville', 'macarthur', 'rough', 'darnestown', 'maryhill', 'bowlus', 'tomkins', 'herricks', 'mosquito', 'brinnon', 'gough'}
                     
-                    if scene in no_list:
+                    if scene in new_list and full:
+                        continue
+                    if scene in no_list and (not full):
                         continue
                     is_train, is_val, is_test = row[1], row[2], row[3]
                     if is_train=='1' or is_val=='1':
@@ -173,14 +163,19 @@ class TaskonomyDataset(data.Dataset):
                         dictLabels[label] = [scene]
             return dictLabels
 
-        self.data = loadSplit(splitFile = os.path.join(data_dir, 'splits_taskonomy/train_val_test_medium.csv'))
+        self.split = split
+
+        if split == 'medium':
+            self.data = loadSplit(splitFile = os.path.join(data_dir, 'splits_taskonomy/train_val_test_medium.csv'))
+        elif split == 'fullplus':
+            self.data = loadSplit(splitFile = os.path.join(data_dir, 'splits_taskonomy/train_val_test_fullplus.csv'), full=True)
+        else:
+            assert False
+        print('data_dir: ', data_dir)
+
         self.scene_list = self.data[partition]
         self.img_types = img_types
-        # if transform is not None:
-        #     self.transform = transform
-        # else:
-        #     self.transform = transforms.Compose([
-        #                         transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))])
+
         self.data_list = {}
         for img_type in img_types:
             self.data_list[img_type] = []
@@ -195,7 +190,7 @@ class TaskonomyDataset(data.Dataset):
                 except:
                     print(scene)
                     continue
-                # print(scene, img_type, len(images))
+
                 length[img_type] = len(images)
                 _max = max(_max, length[img_type])
                 for image in images:
@@ -204,13 +199,12 @@ class TaskonomyDataset(data.Dataset):
                         continue
 
             for _key, value in length.items():
-                if value < _max:
-                    # print(_key+'/taskonomy/'+scene, value, _max)
+                if value < _max: # check which scene miss data
                     print(_key+'/taskonomy/'+scene)
 
         # assert False
         self.length = len(self.data_list[self.img_types[0]])
-        print(len(self.data_list[self.img_types[0]]), self.data_list[self.img_types[0]][self.length-1])
+        # print(len(self.data_list[self.img_types[0]]), self.data_list[self.img_types[0]][self.length-1])
         self._max, self._min = {}, {}
         for img_type in self.img_types:
             self._max[img_type] = -1000000.0
@@ -244,9 +238,14 @@ class TaskonomyDataset(data.Dataset):
                 for img in imgs]
 
         if self.crop_size:
-            x = random.randint(0, self.resize_scale - self.crop_size + 1)
-            y = random.randint(0, self.resize_scale - self.crop_size + 1)
-            imgs = [img.crop((x, y, x + self.crop_size, y + self.crop_size)) for img in imgs]
+            if self.partition == 'test':
+                x = (self.resize_scale - self.crop_size + 1)//2
+                y = (self.resize_scale - self.crop_size + 1)//2
+                imgs = [img.crop((x, y, x + self.crop_size, y + self.crop_size)) for img in imgs]
+            else:
+                x = random.randint(0, self.resize_scale - self.crop_size + 1)
+                y = random.randint(0, self.resize_scale - self.crop_size + 1)
+                imgs = [img.crop((x, y, x + self.crop_size, y + self.crop_size)) for img in imgs]
 
         if self.fliplr:
             if random.random() < 0.5:
@@ -272,12 +271,8 @@ class TaskonomyDataset(data.Dataset):
                 elif 'edge_occlusion' in img_type:
                     output[img_type] = rescale_image_gaussian_blur(output[img_type],current_scale=current_scale[img_type], no_clip=no_clip[img_type])
                 else:
-                    # print(img_type, np.array(output[img_type]).dtype)
-                    # print(img_type, np.array(output[img_type]).min(), np.array(output[img_type]).max(), np.array(output[img_type]).shape)
-                    # print(current_scale[img_type])
                     output[img_type] = rescale_image(output[img_type], new_scale[img_type], current_scale=current_scale[img_type], no_clip=no_clip[img_type])
-                    # print(img_type, output[img_type].min(), output[img_type].max(), output[img_type].shape)
-                
+ 
                 output[img_type] = torch.from_numpy(output[img_type]).float()
                 if output[img_type].dim() == 3 and output[img_type].shape[2]>1:
                     output[img_type] = output[img_type].permute(2,0,1)
@@ -286,73 +281,52 @@ class TaskonomyDataset(data.Dataset):
         return output
 
     def __len__(self):
+        if self.partition == 'test':
+            return self.length//10
         return self.length
+
+
+class FewshotTaskonomy(TaskonomyDataset):
+
+    def __init__(self, shots, *args, **kwargs):
+        super(FewshotTaskonomy, self).__init__(*args, **kwargs)
+
+        np.random.seed(20250901)
+        self.choose = np.random.randint(self.length, size=shots)
+
+        print(self.choose)
+
+        self.length = shots
+
+    def __getitem__(self, index):
+        return super(FewshotTaskonomy, self).__getitem__(self.choose[index])
+
+
+class PercentageTaskonomy(TaskonomyDataset):
+
+    def __init__(self, perc, *args, **kwargs):
+        super(PercentageTaskonomy, self).__init__(*args, **kwargs)
+
+        np.random.seed(20250901)
+        self.perc = perc
+        self.choose = np.random.randint(self.length, size=int(self.length * self.perc))
+
+        self.length = int(self.length * self.perc)
+
+    def __getitem__(self, index):
+        return super(PercentageTaskonomy, self).__getitem__(self.choose[index])
+
+
 
 import random
 if __name__ == '__main__':
-    # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'nonfixated_matches', 'normal', 'point_info', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
-    # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
-    # img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'rgb']
     img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'normal', 'principal_curvature', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
-    # rgb class_object class_scene depth_euclidean depth_zbuffer normal
-    # img_types = ['class_scene', 'class_object', 'rgb', 'normal', 'reshading', 'depth_euclidean', 'segment_unsup2d']
-    # img_types = ['rgb', 'class_object', 'normal', 'depth_euclidean', 'keypoints2d']
-    # A = TaskonomyDataset(img_types, resize_scale=224)
-    # # # print('done')
-    # # # A_test = TaskonomyDataset(img_types, resize_scale=256, partition='test')
-    # # # assert False
-    # # # print('len: ', len(A))
-    # # # B = A.__getitem__(32)
-    # # # # assert False
-    # for i in tqdm(range(len(A))):
-    #     t = random.randint(0,len(A)-1)
-    #     # print(t)
-    #     B = A.__getitem__(t)
-    # #     # print(B['edge_texture'][200:230, 200:230]/15000)
-    # #     # print(B['edge_texture'].min(), B['edge_texture'].max(), B['edge_texture'].mean())
-    #     if i <5:
-    #         for img_type in B.keys():
-    #             print(img_type, B[img_type].min(), B[img_type].max())
-    #     if i > 50:
-    #         break
-    #     # print('i: ', i)
-    #     # if i==5:
-    #     #     for img_type in img_types:
-    #     #         print(img_type, B[img_type].min(), B[img_type].max(), B[img_type].shape)
-    # assert False
-    # train_loader = DataLoader(A, batch_size=32, num_workers=12, shuffle=False, pin_memory=True)
-    # for itr, data in tqdm(enumerate(train_loader)):
-    #     pass
-    #     if itr>400:
-    #         break
-
-    # print('min: ', A._min)
-    # print('max: ', A._max)
-
-    # for i in range(10):
-    #     B = A.__getitem__(i)##
-    #     # if i==5:
-    #     #     for img_type in img_types:
-    #     #         print(img_type, B[img_type].min(), B[img_type].max(), B[img_type].shape)
-    # print('min: ', A._min)
-    # print('max: ', A._max)
-    # img_types = ['rgb', 'class_object']
-
-    # assert False
     
-    train_set = TaskonomyDataset(img_types, partition='test', resize_scale=298, crop_size=256, fliplr=True)
+    train_set = TaskonomyDataset(img_types, split='fullplus', partition='train', resize_scale=256, crop_size=224, fliplr=True)
     print(len(train_set))
     A = train_set.__getitem__(len(train_set)-1)
-    # B = train_set.__getitem__(10)
-    # for img_type in img_types:
-    #     print(B[img_type].shape)
-    # assert False
-    for i in range(0, 100):
-        print('i: ', i)
-        B = train_set.__getitem__(i)
-        for img_type in img_types:
-            print(img_type, B[img_type].min(), B[img_type].max(), B[img_type].shape)
+    A = train_set.__getitem__(0)
 
-    train_loader = DataLoader(train_set, batch_size=32, num_workers=30, shuffle=False, pin_memory=True)
+    train_loader = DataLoader(train_set, batch_size=28*6, num_workers=48, shuffle=False, pin_memory=False)
     for itr, data in tqdm(enumerate(train_loader)):
         pass

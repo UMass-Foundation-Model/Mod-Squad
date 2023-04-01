@@ -33,7 +33,7 @@ from util.AutomaticWeightedLoss import AutomaticWeightedLoss
 from fvcore.nn import FlopCountAnalysis, flop_count_str
 from ptflops import get_model_complexity_info
 
-
+# python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_pruning.py      --batch_size 5     --epochs 100         --input_size 224     --blr 5e-4 --weight_decay 0.05     --warmup_epochs 10  --reprob 0.25 --mixup 0.8 --cutmix 1.0   --model mtvit_taskgate_att_mlp_base_MI_twice      --drop_path 0.1         --times 1         --cycle         --copy mtvit_taskgate_att_mlp_base_MI_twice_g        --exp-name pruning_debug
 
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_pruning.py \
 #         --batch_size 20 \
@@ -42,15 +42,15 @@ from ptflops import get_model_complexity_info
 #         --blr 5e-4 --weight_decay 0.05 \
 #         --warmup_epochs 10 \
 #         --reprob 0.25 --mixup 0.8 --cutmix 1.0 \
-#         --model mtvit_taskgate_mlp16E4_small \
+#         --model mtvit_taskgate_small_att_MI  \
 #         --drop_path 0.1 \
 #         --times 1 \
 #         --cycle \
-#         --copy mtvit_taskgate_mlp16E4_small_go \
+#         --copy scaleup_mtvit_taskgate_small_att_MI \
 #         --exp-name pruning_debug \
 
 
-
+# 36.52M
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
@@ -204,9 +204,6 @@ def get_args_parser():
     return parser
 
 
-
-
-
 def main(args):
     if args.tasks == 2:
         args.img_types = [args.the_task, 'rgb']
@@ -255,8 +252,10 @@ def main(args):
 
     cudnn.benchmark = True
 
+    args.img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_unsup2d', 'segment_unsup25d']
     dataset_train = build_taskonomy(is_train=True, args=args)
     dataset_val = build_taskonomy(is_train=False, args=args)
+    args.img_types = [args.the_task, 'rgb']
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -302,141 +301,159 @@ def main(args):
         drop_last=True
     )
 
-    
-    model = models_mt.__dict__[args.model](
-        args.img_types,
-        num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
-        global_pool=args.global_pool,
-    )
-
-    checkpoint_model = model.pruning(args)
-    # load_file = '/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/MTMoe/' + str(args.copy) + '/use.pth'
-    # checkpoint_all = torch.load(load_file, map_location='cpu')
-    # checkpoint_model = checkpoint_all['model']
-
-    interpolate_pos_embed(model, checkpoint_model)
-    msg = model.load_state_dict(checkpoint_model, strict=False)
-    print(msg)
-
-    # if args.copy and not args.eval:
-    #     checkpoint = torch.load(args.copy, map_location='cpu')
-
-    #     print("Load pre-trained checkpoint from: %s" % args.copy)
-    #     checkpoint_model = checkpoint['model']
-    #     state_dict = model.state_dict()
-
-
-    #     # interpolate position embedding
-    #     interpolate_pos_embed(model, checkpoint_model)
-
-    #     # load pre-trained model
-    #     msg = model.load_state_dict(checkpoint_model, strict=False)
-    #     print(msg)
-
-    model.to(device)
-
-    model_without_ddp = model
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-
-    eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    
-    if args.lr is None:  # only base_lr is specified
-        args.lr = args.blr * eff_batch_size / 256
-
-    if misc.is_main_process():
-        print("Model = %s" % str(model_without_ddp))
-        print('model_name:', args.model)
-        
-        if model_without_ddp.moe_type == 'FLOP' or model_without_ddp.ismoe == False:
-            t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
-            flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
-            print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
-
-
-        print('number of params (M): %.2f' % (n_parameters / 1.e6))
-        print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
-        print("actual lr: %.2e" % args.lr)
-
-        print("accumulate grad iterations: %d" % args.accum_iter)
-        print("effective batch size: %d" % eff_batch_size)
-
-        print('len train: ', len(dataset_train))
-        print('len val: ', len(dataset_val))
-
-    args.distributed = True
-    if args.distributed:
-        if args.tasks == 2:
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
-        else:
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-
-    # build optimizer with layer-wise lr decay (lrd)
-    AWL = AutomaticWeightedLoss(args.tasks-1)
-    AWL.to(device)
-
-    param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay,
-        AWL=AWL
-    )
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
-    loss_scaler = NativeScaler()
-
-    criterion = torch.nn.CrossEntropyLoss()
-
-    print("criterion = %s" % str(criterion))
-
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-
-    if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        exit(0)
-
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
-    
-        
-    for epoch in range(args.start_epoch, args.epochs * args.times):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, None,
-            AWL=AWL,
-            log_writer=log_writer,
-            args=args
+    save_dict = {}
+    for args.the_task in ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'segment_unsup2d', 'segment_unsup25d']:
+        args.img_types = [args.the_task, 'rgb']
+        model = models_mt.__dict__[args.model](
+            args.img_types,
+            num_classes=args.nb_classes,
+            drop_path_rate=args.drop_path,
+            global_pool=args.global_pool,
         )
-        if args.output_dir:
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device, AWL, args)
+     
+        checkpoint_model = model.pruning(args)
+        # load_file = '/gpfs/u/home/AICD/AICDzich/scratch/work_dirs/MTMoe/' + str(args.copy) + '/use.pth'
+        # checkpoint_all = torch.load(load_file, map_location='cpu')
+        # checkpoint_model = checkpoint_all['model']
 
-        if log_writer is not None:
-            for _key, value in test_stats.items():
-                log_writer.add_scalar('perf/test_' + str(_key), value, epoch)
+        interpolate_pos_embed(model, checkpoint_model)
+        msg = model.load_state_dict(checkpoint_model, strict=False)
+        print(msg)
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
+        # if args.copy and not args.eval:
+        #     checkpoint = torch.load(args.copy, map_location='cpu')
 
-        if args.output_dir and misc.is_main_process():
+        #     print("Load pre-trained checkpoint from: %s" % args.copy)
+        #     checkpoint_model = checkpoint['model']
+        #     state_dict = model.state_dict()
+
+
+        #     # interpolate position embedding
+        #     interpolate_pos_embed(model, checkpoint_model)
+
+        #     # load pre-trained model
+        #     msg = model.load_state_dict(checkpoint_model, strict=False)
+        #     print(msg)
+
+        model.to(device)
+
+        model_without_ddp = model
+        n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+
+        eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
+        
+        if args.lr is None:  # only base_lr is specified
+            args.lr = args.blr * eff_batch_size / 256
+
+        # if misc.is_main_process():
+        if True:
+            # print("Model = %s" % str(model_without_ddp))
+            print('model_name:', args.model)
+            
+            if model_without_ddp.moe_type == 'FLOP' or model_without_ddp.ismoe == False:
+                t_mg_types = [type_ for type_ in args.img_types if type_ != 'rgb']
+                flops = FlopCountAnalysis(model, (torch.randn(1,3,224,224).to(device), t_mg_types[0], True))
+                print('Model total flops: ', flops.total()/1000000000, 'G ', t_mg_types[0])
+
+
+            print('number of params (M): %.2f' % (n_parameters / 1.e6))
+            print("base lr: %.2e" % (args.lr * 256 / eff_batch_size))
+            print("actual lr: %.2e" % args.lr)
+
+            save_dict[args.the_task] = [(n_parameters / 1.e6)]
+
+            print("accumulate grad iterations: %d" % args.accum_iter)
+            print("effective batch size: %d" % eff_batch_size)
+
+            print('len train: ', len(dataset_train))
+            print('len val: ', len(dataset_val))
+            print('task: ', args.the_task)
+
+            print('------------------------')
+
+        print(save_dict)
+        # assert False
+        args.distributed = True
+        if args.distributed:
+            if args.tasks == 2:
+                model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+            else:
+                model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+            model_without_ddp = model.module
+
+        # build optimizer with layer-wise lr decay (lrd) 
+        AWL = AutomaticWeightedLoss(args.tasks-1)
+        AWL.to(device)
+
+        param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
+            no_weight_decay_list=model_without_ddp.no_weight_decay(),
+            layer_decay=args.layer_decay,
+            AWL=AWL
+        )
+        optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+        loss_scaler = NativeScaler()
+
+        criterion = torch.nn.CrossEntropyLoss()
+
+        print("criterion = %s" % str(criterion))
+
+        # misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+
+        if args.eval:
+            test_stats = evaluate(data_loader_val, model, device)
+            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+            exit(0)
+
+        print(f"Start training for {args.epochs} epochs")
+        start_time = time.time()
+        max_accuracy = 0.0
+        
+            
+        # for epoch in range(args.start_epoch, args.epochs * args.times):
+        for epoch in range(0,1):
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
+            train_stats = {}
+            # train_stats = train_one_epoch(
+            #     model, criterion, data_loader_train,
+            #     optimizer, device, epoch, loss_scaler,
+            #     args.clip_grad, None,
+            #     AWL=AWL,
+            #     log_writer=log_writer,
+            #     args=args
+            # )
+            # if args.output_dir:
+            #     misc.save_model(
+            #         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+            #         loss_scaler=loss_scaler, epoch=epoch)
+
+            test_stats = evaluate(data_loader_val, model, device, AWL, args)
+
             if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+                for _key, value in test_stats.items():
+                    log_writer.add_scalar('perf/test_' + str(_key), value, epoch)
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                            **{f'test_{k}': v for k, v in test_stats.items()},
+                            'epoch': epoch,
+                            'n_parameters': n_parameters}
+
+            save_dict[args.the_task].append(test_stats)
+
+            if args.output_dir and misc.is_main_process():
+                if log_writer is not None:
+                    log_writer.flush()
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print('Training time {}'.format(total_time_str))
+
+    print('thresh: ', args.thresh)
+    print(save_dict)
 
 
 if __name__ == '__main__':
@@ -453,4 +470,5 @@ if __name__ == '__main__':
 
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
     main(args)

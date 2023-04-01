@@ -1,14 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# timm: https://github.com/rwightman/pytorch-image-models/tree/master/timm
-# DeiT: https://github.com/facebookresearch/deit
-# --------------------------------------------------------
-
 from functools import partial
 
 import torch
@@ -43,9 +32,6 @@ class PatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.num_patches = num_patches
 
-        # self.to_patch_embedding = nn.Sequential(
-        #     Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = 16, p2 = 16),
-        # )
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
@@ -54,7 +40,6 @@ class PatchEmbed(nn.Module):
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x).flatten(2).transpose(1, 2)
-        # x = self.to_patch_embedding(x)
         return x
 
 
@@ -295,7 +280,7 @@ class MoEnhanceBlock(nn.Module):
             return x, z_loss + aux_loss
 
 class MoETaskAttention(nn.Module):
-    def __init__(self, dim, task_num=9, num_experts=24, num_heads=8, head_dim=None, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
+    def __init__(self, dim, noisy_gating=True, task_num=9, num_experts=24, num_heads=8, head_dim=None, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.,
         sample_topk=2, cvloss=0, switchloss=0.01 * 10, zloss=0.001 * 1, w_topk_loss=0.1, w_MI=0., limit_k=0, moe_type='normal'):
         super().__init__()
         self.task_num = task_num
@@ -311,7 +296,7 @@ class MoETaskAttention(nn.Module):
         self.scale = qk_scale or head_dim ** -0.5
         self.moe_type = moe_type
 
-        self.q_proj = TaskMoE(dim, head_dim, num_experts, num_heads, w_MI=w_MI, acc_aux_loss=True, task_num=task_num, cvloss=cvloss, switchloss=switchloss, zloss=zloss, w_topk_loss=w_topk_loss, limit_k=limit_k)
+        self.q_proj = TaskMoE(dim, head_dim, num_experts, num_heads, noisy_gating=noisy_gating, w_MI=w_MI, acc_aux_loss=True, task_num=task_num, cvloss=cvloss, switchloss=switchloss, zloss=zloss, w_topk_loss=w_topk_loss, limit_k=limit_k)
 
         self.kv_proj = nn.Sequential(
             nn.Linear(dim, head_dim * 2),
@@ -370,44 +355,66 @@ class MoEnhanceTaskBlock(nn.Module):
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, head_dim=None, init_values=None, z_weight=0.000,
                  post_layer_norm=False,
                  task_num=9,
+                 noisy_gating=True,
                  att_w_topk_loss=0.0, att_limit_k=0, 
-                 cvloss=0, switchloss=0.01 * 1, zloss=0.001 * 1, w_topk_loss=0.1, limit_k=0, 
+                 cvloss=0, switchloss=0.01 * 1, zloss=0.001 * 1, w_topk_loss=0.0, limit_k=0, 
                  w_MI = 0.,
+                 use_moe_mlp=True,
+                 use_moe_attn=True,
                  sample_topk=0, moe_type='normal'):
         super().__init__()
         self.task_num = task_num
         self.norm1 = norm_layer(dim)
-        self.attn = MoETaskAttention(
-            dim, task_num=task_num, num_heads=num_heads, num_experts=num_attn_experts, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop,
-            cvloss=cvloss, switchloss=switchloss, zloss=zloss, w_MI=w_MI, w_topk_loss=att_w_topk_loss, limit_k=att_limit_k, sample_topk=sample_topk, moe_type=moe_type)
+        self.use_moe_attn = use_moe_attn
+        if use_moe_attn:
+            self.attn = MoETaskAttention(
+                dim, task_num=task_num, noisy_gating=noisy_gating, num_heads=num_heads, num_experts=num_attn_experts, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop,
+                cvloss=cvloss, switchloss=switchloss, zloss=zloss, w_MI=w_MI, w_topk_loss=att_w_topk_loss, limit_k=att_limit_k, sample_topk=sample_topk, moe_type=moe_type)
+        else:
+            self.attn = Attention(dim, num_heads=num_heads, head_dim=head_dim, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
 
-        self.mlp = TaskMoE(dim,
-                mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
-                bias=True,
-                acc_aux_loss=True, 
-                cvloss=cvloss,
-                switchloss=switchloss,
-                zloss=zloss,
-                w_topk_loss=w_topk_loss,
-                w_MI=w_MI,
-                limit_k=limit_k,
-                task_num=task_num,
-                activation=nn.Sequential(
-                    nn.GELU(),
-                    # self.dropout_module Remove dropout for now
-                ),
-                noisy_gating=ffd_noise
-            )
+        self.use_moe_mlp = use_moe_mlp
+        if use_moe_mlp:
+            self.mlp = TaskMoE(dim,
+                    mlp_hidden_dim // ffd_heads, num_ffd_experts, ffd_heads,
+                    bias=True,
+                    acc_aux_loss=True, 
+                    cvloss=cvloss,
+                    switchloss=switchloss,
+                    zloss=zloss,
+                    w_topk_loss=w_topk_loss,
+                    w_MI=w_MI,
+                    limit_k=limit_k,
+                    task_num=task_num,
+                    activation=nn.Sequential(
+                        nn.GELU(),
+                        # self.dropout_module Remove dropout for now
+                    ),
+                    noisy_gating=ffd_noise
+                )
+        else:
+            self.mlp = Mlp(dim, hidden_features=dim * 4, drop=drop)
+            # Mlp(nn.Module): def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         assert z_weight == 0
 
     def forward(self, x, task_bh, mask=None):
-        y, z_loss = self.attn(self.norm1(x), task_bh, mask=mask)
-        x = x + self.drop_path(y)
+        if self.use_moe_attn:
+            y, z_loss = self.attn(self.norm1(x), task_bh, mask=mask)
+            x = x + self.drop_path(y)
+        else:
+            z_loss = 0.0
+            y = self.attn(self.norm1(x), mask=mask)
+            x = x + self.drop_path(y)
 
-        y, aux_loss = self.mlp(self.norm2(x), task_bh)
-        x = x + self.drop_path(y)
+        if self.use_moe_mlp:
+            y, aux_loss = self.mlp(self.norm2(x), task_bh)
+            x = x + self.drop_path(y)
+        else:
+            x = x + self.drop_path(self.mlp(self.norm2(x)))
+            aux_loss = 0
         return x, z_loss + aux_loss

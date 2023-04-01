@@ -1,13 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# --------------------------------------------------------
-
 import os
 import PIL
 
@@ -289,6 +279,6 @@ def build_taskonomy(is_train, args):
     if is_train:
         dataset = TaskonomyDataset(args.img_types, partition='train', transform=transform, resize_scale=256, crop_size=224, fliplr=True)
     else:
-        dataset = TaskonomyDataset(args.img_types, partition='test', transform=transform, resize_scale=224)
+        dataset = TaskonomyDataset(args.img_types, partition='test', transform=transform, resize_scale=256, crop_size=224)
     return dataset
 

@@ -148,37 +148,3 @@ def log_image_grid(writer, images, logging_name, itr, num=36):
     nrow = max(1, int(img.size(0) ** 0.5))
     ndarr = images2grid(img, return_as_PIL=True, nrow=nrow, padding=2, pad_value=0, normalize=False, range=(0,1))
     writer.add_image(logging_name, ndarr, itr, dataformats='HWC')
-
-
-# class Dalle_VAE(BasicVAE):
-#     def __init__(self, image_size):
-#         super().__init__()
-#         self.encoder = None
-#         self.decoder = None
-#         self.image_size = image_size
-
-#     def load_model(self, model_dir, device):
-#         self.encoder = load_model(os.path.join(model_dir, "encoder.pkl"), device)
-#         self.decoder = load_model(os.path.join(model_dir, "decoder.pkl"), device)
-
-#     def decode(self, img_seq):
-#         bsz = img_seq.size()[0]
-#         img_seq = img_seq.view(bsz, self.image_size // 8, self.image_size // 8)
-#         z = F.one_hot(img_seq, num_classes=self.encoder.vocab_size).permute(0, 3, 1, 2).float()
-#         return self.decoder(z).float()
-
-#     def get_codebook_indices(self, images):
-#         z_logits = self.encoder(images)
-#         return torch.argmax(z_logits, axis=1)
-
-#     def get_codebook_probs(self, images):
-#         z_logits = self.encoder(images)
-#         return nn.Softmax(dim=1)(z_logits)
-
-#     def forward(self, img_seq_prob, no_process=False):
-#         if no_process:
-#             return self.decoder(img_seq_prob.float()).float()
-#         else:
-#             bsz, seq_len, num_class = img_seq_prob.size()
-#             z = img_seq_prob.view(bsz, self.image_size // 8, self.image_size // 8, self.encoder.vocab_size)
-#             return self.decoder(z.permute(0, 3, 1, 2).float()).float()

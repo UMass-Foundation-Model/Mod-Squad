@@ -6,7 +6,7 @@ import shutil
 def run_main():
     ngpus = 4    
     nodes = 15
-    exp_name = 'm3vit_taskgate_mlp16E4_small'
+    exp_name = 'm3vit_taskgate_mlp16E4_small_go'
     world_size = ngpus * nodes
     # datetime object containing current date and time
     now = datetime.now()

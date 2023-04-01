@@ -1,14 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# DeiT: https://github.com/facebookresearch/deit
-# BEiT: https://github.com/microsoft/unilm/tree/master/beit
-# --------------------------------------------------------
-
 import builtins
 import datetime
 import os
@@ -315,7 +304,7 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
     return total_norm
 
 
-def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
+def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, AWL=None):
     output_dir = Path(args.output_dir)
     epoch_name = str(epoch)
     
@@ -329,6 +318,8 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
                 'scaler': loss_scaler.state_dict(),
                 'args': args,
             }
+            if AWL is not None:
+                to_save['AWL'] = AWL.state_dict()
         if is_main_process():
             files = os.listdir(args.output_dir)
             for file in files:
@@ -341,7 +332,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
         model.save_checkpoint(save_dir=args.output_dir, tag="checkpoint-%s" % epoch_name, client_state=client_state)
 
 
-def load_model(args, model_without_ddp, optimizer, loss_scaler):
+def load_model(args, model_without_ddp, optimizer, loss_scaler, AWL=None):
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -356,6 +347,11 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
             print("With optim & sched!")
+        if 'AWL' in checkpoint and AWL is not None:
+            AWL.load_state_dict(checkpoint['AWL'])
+            print('loading AWL!')
+        else:
+            print('!!!!AWL is not loaded')
 
 
 def all_reduce_mean(x):

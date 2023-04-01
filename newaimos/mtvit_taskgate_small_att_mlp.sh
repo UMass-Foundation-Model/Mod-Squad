@@ -44,7 +44,7 @@ python -m torch.distributed.launch \
         --warmup_epochs 10 \
         --times 1 \
         --cycle \
-        --model mtvit_taskgate_small_att_mlp \
+        --model mtvit_taskgate_small_att_mlp_MI \
         --drop_path 0.1 \
         --exp-name ${EXP} \
 

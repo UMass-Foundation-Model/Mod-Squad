@@ -34,7 +34,6 @@ from fvcore.nn import FlopCountAnalysis, flop_count_str
 from ptflops import get_model_complexity_info
 
 
-
 # python -m torch.distributed.launch --nnodes=1 --nproc_per_node=2 --master_port 44875 main_pru_tuning.py \
 #         --batch_size 20 \
 #         --epochs 100 \
@@ -49,8 +48,6 @@ from ptflops import get_model_complexity_info
 #         --the_task class_scene \
 #         --copy fixnew_mtvit_taskgate_small_att_mlp_7 \
 #         --exp-name pruning_debug \
-
-
 
 
 def get_args_parser():
@@ -201,17 +198,22 @@ def get_args_parser():
     parser.add_argument('--thresh', type=float, default=3, 
                         help='threshold for copying the expert')
 
+    parser.add_argument('--shots', default=-1, type=int,
+                        help='number of distributed processes')
+
+    parser.add_argument('--perc', default=1.0, type=float,
+                        help='number of distributed processes')
+
     return parser
 
 
-
-
-
 def main(args):
-    if args.tasks == 2:
-        args.img_types = [args.the_task, 'rgb']
-    else:
-        assert False
+    args.tasks = 3
+    args.img_types = ['class_object', 'class_scene', 'rgb']
+    # if args.tasks == 2:
+    #     args.img_types = [args.the_task, 'rgb']
+    # else:
+    #     assert False
 
     if args.ori_tasks == 15:
         args.ori_img_types = ['class_object', 'class_scene', 'depth_euclidean', 'depth_zbuffer', 'edge_occlusion', 'edge_texture', 'keypoints2d', 'keypoints3d', 'normal', 'principal_curvature', 'reshading', 'rgb', 'segment_semantic', 'segment_unsup2d', 'segment_unsup25d']
@@ -255,7 +257,15 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_taskonomy(is_train=True, args=args)
+    # if args.shots !=-1:
+    if args.perc < 1.0:
+        # dataset_train = build_taskonomy(is_train=True, args=args)
+        from util.dataset_taskonomy import PercentageTaskonomy
+        dataset_train = PercentageTaskonomy(args.perc, args.img_types, split='fullplus', partition='train', resize_scale=256, crop_size=224, fliplr=True)
+        # from util.dataset_taskonomy import FewshotTaskonomy
+        # dataset_train = FewshotTaskonomy(args.shots, args.img_types, partition='train', resize_scale=256, crop_size=224, fliplr=True)
+    else:
+        dataset_train = build_taskonomy(is_train=True, args=args)
     dataset_val = build_taskonomy(is_train=False, args=args)
 
     if True:  # args.distributed:
@@ -315,7 +325,7 @@ def main(args):
     interpolate_pos_embed(model, checkpoint_model)
     msg = model.load_state_dict(checkpoint_model, strict=False)
     print(msg)
-    model.frozen()
+    # model.frozen()
 
     model.patch_embed.proj.requires_grad = False
     model.pos_embed.requires_grad = False
@@ -418,22 +428,23 @@ def main(args):
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device, AWL, args)
+        if epoch >=0:
+            test_stats = evaluate(data_loader_val, model, device, AWL, args)
 
-        if log_writer is not None:
-            for _key, value in test_stats.items():
-                log_writer.add_scalar('perf/test_' + str(_key), value, epoch)
-
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
-
-        if args.output_dir and misc.is_main_process():
             if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+                for _key, value in test_stats.items():
+                    log_writer.add_scalar('perf/test_' + str(_key), value, epoch)
+
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                            **{f'test_{k}': v for k, v in test_stats.items()},
+                            'epoch': epoch,
+                            'n_parameters': n_parameters}
+
+            if args.output_dir and misc.is_main_process():
+                if log_writer is not None:
+                    log_writer.flush()
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
