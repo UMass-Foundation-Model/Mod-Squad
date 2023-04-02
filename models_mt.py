@@ -6,7 +6,7 @@ from einops.layers.torch import Rearrange
 import os 
 import numpy as np
 
-from models_mae import PatchEmbed, MoEnhanceBlock, MoEnhanceTaskBlock
+from models_moe import PatchEmbed, MoEnhanceBlock, MoEnhanceTaskBlock
 
 import timm.models.vision_transformer
 class MTVisionTransformer(timm.models.vision_transformer.VisionTransformer):
